@@ -70,6 +70,25 @@ Two sources answer the same question deliberately. On 2026-09-04
 `linkedin-profile-search` returned zero rows for every company including
 Booking.com, having worked three hours earlier.
 
+**That was diagnosed wrong, and the correction matters more than the incident.**
+It was recorded as an upstream outage, and `actorHealth()` was built to infer
+degradation from repeated emptiness. Later the same day a run record read:
+
+```json
+{"status":"SUCCEEDED","statusMessage":"free user run limit exceeded",
+ "stats":{"runTimeSecs":4.707},
+ "storages":{"datasets":{"default":{"itemCount":0}}}}
+```
+
+An exhausted Apify quota returns SUCCEEDED with zero rows and says so in
+`statusMessage`, a field nothing read. Reported as an empty search it becomes a
+lie the whole way up: the tool tells the model "no profiles at this company",
+the model concludes nobody is there, and a billing problem is recorded as a
+fact about a business. `runActorViaMcp` now raises `ActorBlockedError` on it,
+because no query will fix an account limit and the model must not be asked to
+work around one. Two sources are still right — but they were never independent
+of the account paying for both.
+
 **Both ways of finishing are tool calls.** `record_no_contact` exists because
 "there is nobody to approach" is an answer, and an answer has to be committed
 to be scoreable. While it was inferred from free text the runner labelled it

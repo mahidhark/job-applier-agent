@@ -134,6 +134,9 @@ export const recordSpend = (actor: string, usd: number, note?: string) =>
  * zero for EVERY company is an outage, and the two are indistinguishable from
  * inside a single call. On 2026-09-04 linkedin-profile-search returned zero
  * rows for every company including Booking.com, having worked three hours
+ * — which was misdiagnosed as an upstream outage and was almost certainly an
+ * exhausted Apify quota, now caught directly in apify.ts. This table stays as
+ * corroboration, not as the primary signal it was built to be. Three hours
  * earlier — and both models correctly-but-wrongly concluded "no people at this
  * company". Recording the rate is what makes that difference visible.
  */

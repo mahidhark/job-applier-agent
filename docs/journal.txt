@@ -657,3 +657,84 @@ Files
 Tests: 75 -> 86. npm run typecheck clean.
 Spend: ~$0.35 across five probe calls, not recorded in the spend table —
 the probes call runActorViaMcp directly, which bypasses recordSpend.
+
+
+2026-09-04  "The source is down" was the bill
+
+Went looking for whether linkedin-profile-search had recovered. It has not,
+and the reason is not what yesterday's entry says it is.
+
+    {"status":"SUCCEEDED","statusMessage":"free user run limit exceeded",
+     "stats":{"runTimeSecs":4.707},
+     "storages":{"datasets":{"default":{"itemCount":0}}}}
+
+An Apify account at its plan limit does not error. Every actor returns
+SUCCEEDED in under five seconds with zero rows and the reason in
+`statusMessage` — a field nothing in this repo read. Reported upward as an
+empty result it becomes a lie the whole way: the tool tells the model "no
+profiles at this company", the model reasonably concludes nobody is there, and
+a billing problem is written down as a fact about a business.
+
+That is what the day-long "outage" almost certainly was. I diagnosed it as
+upstream, wrote it into architecture.md, database.md and two source comments,
+and built actor_calls + actorHealth() to infer degradation from repeated
+emptiness. The answer was in every single response. Corrected in all five
+places rather than left standing — a doc recording a wrong diagnosis is worse
+than no doc. actorHealth() stays as corroboration; it is no longer the primary
+signal it was built to be.
+
+Also learned: TWO SOURCES ARE NOT INDEPENDENT WHEN ONE ACCOUNT PAYS FOR BOTH.
+The fallback was designed against one source failing. A quota takes out every
+actor at once, and no amount of switching sources helps.
+
+runActorViaMcp now raises ActorBlockedError when a run produced no rows and
+said why. Deliberately an exception rather than a message to the model: an
+account limit is not something a different query can work around, so handing
+it to the model as something to judge would be asking it to solve a problem it
+cannot reach. This is the "unverifiable from inside the loop" half of the rule
+the agent is built on.
+
+THE OTHER HALF WENT TO THE MODEL. Mahi's question — could the model not judge
+this itself, is there a feedback loop — splits cleanly:
+
+  - "these people have no job titles, I cannot pick between them" IS judgeable
+    in-loop. The model had no lever and no way to know it was unusual. It is
+    now told, with counts, by evidenceWarning(), and left to decide.
+  - "this URL does not resolve" is NOT judgeable in-loop. An opaque member id
+    looks exactly like a URL from where the model sits. record_contact refuses
+    one and names the fix.
+  - and the third thing, which was the real answer: NOTHING GRADED THE
+    EVIDENCE. Every scorer written yesterday grades the agent's answer. None
+    asked whether what it was handed was fit to answer from. `evidence_usable`
+    does now — it scores the tool layer, is reported separately from the model
+    comparison, and is deliberately not a gate. Averaging a harness measurement
+    into a model score is how a broken tool becomes "the small model is worse".
+
+The Short-mode finding that started this: linkedin-company-employees in Short
+mode returns no headline, no publicIdentifier, and an OPAQUE MEMBER ID in
+linkedinUrl (/in/ACwAAAHBqUgB...) that does not resolve. Full mode returns
+/in/rachitchaudhary, a headline, and LinkedIn's #hiring flag. Same actor, one
+enum value. Switched to Full, $0.05 -> $0.10 per call, which is the same price
+as find_people_at_company.
+
+Full profiles are 66k-109k chars each because every past job carries the whole
+employer object, so runActorViaMcp takes an optional field projection and both
+people-tools use it. Ten profiles goes from most of a megabyte to a few
+kilobytes. None of it ever reached the model — the tools render first — but all
+of it crossed the transport.
+
+Files
+  src/agent/apify.ts         ActorBlockedError; field projection; __test export
+  src/agent/apify.test.ts    (new, 8 tests) run records copied from live output
+  src/agent/profile.ts       usability, resolvable-URL check, evidenceWarning
+  src/agent/tools/index.ts   Full mode, projection, cost 0.10, refuses dead links
+  src/eval/scorers/index.ts  evidence_usable; HARNESS_SCORERS kept separate
+  README.md, CLAUDE.md, docs/architecture.md, docs/database.md, src/store/db.ts
+                             outage diagnosis corrected in all five
+
+Tests: 86 -> 109. npm run typecheck clean.
+Spend: ~$0.62 across nine probe calls, none recorded in the spend table.
+
+NEEDS MAHI: the Apify account is at its free-tier limit. Nothing that calls an
+actor works until that is resolved — not the agent, not cases:prepare, not the
+paid discovery source. The free ATS boards are unaffected.

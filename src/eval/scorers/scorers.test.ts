@@ -8,7 +8,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAgentTestRun, createTestMessage, createTrajectoryTestRun } from '@mastra/evals/scorers/utils';
 import type { ScorerRunOutputForAgent } from '@mastra/core/evals';
-import { answered, rightContact, noFabrication, grounded, trajectory, isUnscoreable } from './index.js';
+import {
+  answered, rightContact, noFabrication, grounded, trajectory, evidenceUsable, isUnscoreable,
+} from './index.js';
 import { readRun, urlKey } from './commitment.js';
 import type { EvalCase } from '../cases.js';
 
@@ -270,5 +272,48 @@ describe('trajectory', () => {
     }));
     const r = await trajectory.run(run);
     assert.ok(r.score >= direct.score * 0.75, `fallback ${r.score} vs direct ${direct.score}`);
+  });
+});
+
+describe('evidence_usable — the scorer that grades the harness', () => {
+  const OPAQUE = 'https://www.linkedin.com/in/ACwAAAHBqUgBCuiQE60bvIG0rkuBqPU9s4Ekxyw';
+  const VANITY = 'https://www.linkedin.com/in/rachitchaudhary';
+
+  test('complete evidence scores 1', async () => {
+    const r = await score(evidenceUsable, [
+      found(`Rachit Chaudhary — Head of Product\n  ${VANITY}`), commit({ profileUrl: VANITY }),
+    ]);
+    assert.equal(r.score, 1);
+  });
+
+  // Exactly what was live for a day: names, no titles, unopenable links — and
+  // every other scorer would have blamed the model for it.
+  test('Short-mode output scores 0 and says it is a tool fault', async () => {
+    const r = await score(evidenceUsable, [
+      found(`Joshua Wood — no title given\n  ${OPAQUE}`), commit({ profileUrl: OPAQUE }),
+    ]);
+    assert.equal(r.score, 0);
+    assert.match(r.reason, /tool layer, not the model/);
+  });
+
+  test('half-usable evidence scores in between rather than pass or fail', async () => {
+    const r = await score(evidenceUsable, [
+      found(`Rachit Chaudhary — Head of Product\n  ${VANITY}\n\nJoshua Wood — no title given\n  ${OPAQUE}`),
+      commit({ profileUrl: VANITY }),
+    ]);
+    assert.ok(r.score! > 0 && r.score! < 1, `expected a partial score, got ${r.score}`);
+  });
+
+  // It grades the tools. When no tool ran there is nothing to grade, and that
+  // must not read as a tool failure.
+  test('a run with no evidence calls is not scored against the tools', async () => {
+    const r = await score(evidenceUsable, [commit({ profileUrl: VANITY })]);
+    assert.equal(r.score, 1);
+    assert.match(r.reason, /nothing to judge/);
+  });
+
+  test('it is not a gate — a model must never be penalised for it', async () => {
+    const { GATES } = await import('./index.js');
+    assert.ok(!GATES.some((g) => (g.id as string) === evidenceUsable.id));
   });
 });

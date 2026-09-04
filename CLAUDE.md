@@ -86,6 +86,14 @@ because the right action is the same whether a source is empty or broken, so the
 decision never needed the diagnosis. `actorHealth()` reports degradation to the
 model rather than acting on it.
 
+**An empty Apify result may be a billing problem wearing an empty result's
+clothes.** A plan limit returns `status: SUCCEEDED`, zero rows, and
+`statusMessage: "free user run limit exceeded"` — no error, 4.7s. Read as
+emptiness it becomes "this company has nobody", and a day was lost calling it
+an upstream outage. `runActorViaMcp` raises `ActorBlockedError` on it. Never
+add a code path that treats zero rows as an answer without checking the run
+record first.
+
 **`enriched` and `queued` are declared in `JOB_STATES` and never written.**
 Nothing sets them. `queue.ts` selects on all three and works only because of
 `scored`. Do not write logic that waits on either without setting it first.
