@@ -136,6 +136,25 @@
     "coverLetterMaxChars": 2000,
     "model": "claude-opus-5"
   },
+  "ai": {
+    "$comment": "Provider per task. Small models are plausible for extraction and hopeless-to-unproven for prose; keeping the choice per-task means the eval can move one without moving the others.",
+    "provider": "anthropic",
+    "tasks": {
+      "extract": "anthropic",
+      "compose": "anthropic",
+      "tools": "anthropic",
+      "judge": "anthropic"
+    },
+    "anthropic": {
+      "model": "claude-opus-5",
+      "effort": "medium"
+    },
+    "ollama": {
+      "baseUrl": "http://localhost:11434",
+      "model": "qwen2.5:3b",
+      "timeoutMs": 900000
+    }
+  },
   "queue": {
     "maxPerDay": 10
   }

@@ -16,6 +16,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { CONFIG_DIR } from './config.js';
 import type { BoardConfig } from './sources/types.js';
+import type { AiConfig } from './ai/index.js';
 
 export interface ScreenConfig {
   operatorCountry: string;
@@ -62,6 +63,7 @@ export interface AgentConfig {
   score: ScoreConfig;
   enrich: EnrichConfig;
   draft: { connectionNoteMaxChars: number; coverLetterMaxChars: number; model: string };
+  ai: AiConfig;
   queue: { maxPerDay: number };
   boards: BoardConfig[];
   searches: { enabled: boolean; discoveryActor: string; enrichActor: string; searches: SearchProfile[] };
@@ -81,7 +83,7 @@ export function loadConfig(dir = CONFIG_DIR): AgentConfig {
   const ats = readJson<{ boards?: BoardConfig[] }>(join(dir, 'sources', 'ats.json'), 'ats sources');
   const searches = readJson<AgentConfig['searches']>(join(dir, 'sources', 'searches.json'), 'search sources');
 
-  for (const section of ['screen', 'score', 'enrich', 'draft', 'queue'] as const) {
+  for (const section of ['screen', 'score', 'enrich', 'draft', 'ai', 'queue'] as const) {
     if (!base[section]) throw new Error(`config/default.json has no "${section}" section`);
   }
   if (!(base.pollIntervalMinutes && base.pollIntervalMinutes >= 15)) {
@@ -101,6 +103,7 @@ export function loadConfig(dir = CONFIG_DIR): AgentConfig {
     score: base.score as ScoreConfig,
     enrich: base.enrich as EnrichConfig,
     draft: base.draft as AgentConfig['draft'],
+    ai: base.ai as AiConfig,
     queue: base.queue as AgentConfig['queue'],
     boards,
     searches,

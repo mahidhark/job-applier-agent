@@ -52,3 +52,69 @@ Files
   the repository (new)
 
 Tests: 14. npm run typecheck clean.
+
+
+2026-09-04 (cont.) — configurable AI layer, and enrich as an MCP agent
+------------------------------------------------------------------------
+Two things, on Mahi's brief: make the model provider swappable so a local SLM
+can be tested against Claude, and build enrichment as a real agent over MCP
+rather than a fixed sequence.
+
+Staging already had what was needed: ollama 0.21.0 serving qwen2.5:3b and
+llama3.2:3b, plus nomic-embed-text. No GPU, 4 cores, ~3GB free. A structured
+extraction test returned schema-valid JSON first try in 23.9s for 19 tokens.
+
+That latency shapes the hypothesis. Extraction is seconds; a 1,500-char letter
+is ~400 tokens and would take 8-10 minutes. So the eval must score the
+operations separately — "can an SLM replace Claude" has a different answer for
+schema-filling than for prose, and one verdict would hide it.
+
+src/ai/ — the model boundary. Three operations, in ascending order of how hard
+they are for a small model: parse (schema-constrained), complete (prose), step
+(one turn of tool use). Both providers use their own NATIVE constraint
+mechanism — Anthropic output_config, Ollama `format` and `tools` — never
+JSON.parse over free prose, because the difference between those is the thing
+being measured.
+
+Provider is selected PER TASK, not globally (config.ai.tasks). The likely
+production answer is a mix, and a global switch would force an all-or-nothing
+choice the evidence will not support.
+
+Deliberately NOT using Mastra or LangChain. The loop is 60 lines and there is
+no memory to manage — the agent's whole working state is one posting and a
+message array, and anything durable is already in SQLite. The decisive reason
+is narrower: a framework normalises both providers behind its own adapter, so
+the comparison would measure the adapter rather than the models. Reconsider if
+this ever grows cooperating agents, durable resumable workflows, or approval
+steps mid-loop. None are true.
+
+src/enrich/ — the only agentic surface in the system. "Find who to approach"
+genuinely branches: the poster may be the hiring manager, a recruiter, or
+absent, and the right next move differs. Everything else stays deterministic
+because it runs over thousands of postings and has to stay explainable.
+
+MCP is the transport but the agent does NOT see `call-actor`. Three narrow
+tools with fixed actor names and small schemas: letting a model pick an
+arbitrary actor is letting it pick an arbitrary bill, and the call-actor schema
+alone would swamp a 3B model. Cost per tool is declared and charged before the
+call, so the loop refuses rather than overspending.
+
+7 agent-loop tests, all against a scripted model, no network: tool results
+reach the next step, budget refuses before billing, a hallucinated tool name is
+reported back rather than dropped, a throwing tool does not kill the run, a
+looping model is stopped by maxSteps, a model error ends cleanly.
+
+KNOWN GAP, found by dry-running against real data: ATS sources carry neither a
+job poster nor a company LinkedIn URL — only the LinkedIn source does. So
+`find_people_at_company`, which needs a company URL, is unusable for every
+Ashby and Greenhouse posting, which is most of them. Needs a company-name to
+LinkedIn-URL resolution step before the agent is useful on ATS-sourced roles.
+
+Files
+  src/ai/{types,anthropic,ollama,index}.ts     (new)
+  src/enrich/{agent,tools,mcp,enrich,run}.ts   (new)
+  src/enrich/agent.test.ts                     (new, 7 tests)
+  config/default.json                          ai section
+  src/config-file.ts                           ai wired + validated
+
+Tests: 14 -> 21. npm run typecheck clean.

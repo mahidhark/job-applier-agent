@@ -5,11 +5,14 @@
   "type": "module",
   "description": "Finds full-time roles worth applying to, identifies who to talk to, and drafts the outreach. Sending stays human.",
   "license": "SEE LICENSE IN LICENSE",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "poll": "tsx --env-file-if-exists=.env src/poll.ts",
     "poll:once": "tsx --env-file-if-exists=.env src/poll.ts --once",
     "queue": "tsx --env-file-if-exists=.env src/queue.ts",
+    "enrich": "tsx --env-file-if-exists=.env src/enrich/run.ts",
     "status": "tsx --env-file-if-exists=.env src/status.ts",
     "explain": "tsx --env-file-if-exists=.env src/explain.ts",
     "sources": "tsx --env-file-if-exists=.env src/sources/probe.ts",
@@ -18,6 +21,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "better-sqlite3": "^13.0.3",
     "zod": "^4.5.4"
   },
