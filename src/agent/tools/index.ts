@@ -34,6 +34,7 @@ import { z } from 'zod';
 import { recordContact, recordSpend, recordActorCall, actorHealth } from '../../store/db.js';
 import { runActorViaMcp } from '../apify.js';
 import { checkGrounding } from '../grounding.js';
+import { renderProfiles, type RawProfile } from '../profile.js';
 
 const COMPANY_SEARCH = 'harvestapi/linkedin-company';
 const PROFILE_SEARCH = 'harvestapi/linkedin-profile-search';
@@ -54,10 +55,6 @@ interface CompanyHit {
   name?: string; linkedinUrl?: string; website?: string | null;
   employeeCount?: number; tagline?: string;
   locations?: Array<{ parsed?: { text?: string } }>;
-}
-interface ShortProfile {
-  firstName?: string; lastName?: string; headline?: string;
-  linkedinUrl?: string; location?: { linkedinText?: string };
 }
 interface Post { content?: string; text?: string; postedAt?: string }
 
@@ -96,13 +93,6 @@ export interface EnrichToolContext {
   /** Returns false when the run has spent its budget. */
   charge: (tool: string) => boolean;
 }
-
-const renderProfiles = (rows: ShortProfile[]): string =>
-  rows.map((p) => {
-    const n = `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim() || '(no name)';
-    return `${n} — ${p.headline ?? 'no headline'}\n  ${p.linkedinUrl ?? ''}` +
-           `${p.location?.linkedinText ? `\n  ${p.location.linkedinText}` : ''}`;
-  }).join('\n\n');
 
 export function buildEnrichTools(ctx: EnrichToolContext) {
   const remember = (s: string) => { ctx.transcript.text += `\n${s}`; return s; };
@@ -153,7 +143,7 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
         currentCompanies: [companyLinkedinUrl],
         ...(jobTitles?.length ? { currentJobTitles: jobTitles } : {}),
         maxItems: 10,
-      }, 10)) as ShortProfile[];
+      }, 10)) as RawProfile[];
       recordSpend(PROFILE_SEARCH, TOOL_COST_USD['find_people_at_company']!, ctx.jobId);
       recordActorCall(PROFILE_SEARCH, rows.length);
 
@@ -208,7 +198,7 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
         companies: [companyLinkedinUrl],
         ...(jobTitles?.length ? { jobTitles } : {}),
         maxItems: 10,
-      }, 10)) as ShortProfile[];
+      }, 10)) as RawProfile[];
       recordSpend(COMPANY_EMPLOYEES, TOOL_COST_USD['find_employees_at_company']!, ctx.jobId);
       recordActorCall(COMPANY_EMPLOYEES, rows.length);
 

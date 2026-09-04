@@ -597,3 +597,63 @@ Files
   CLAUDE.md               src/agent, src/eval, commands, the five traps
 
 Tests: 75, unchanged. npm run typecheck clean.
+
+
+2026-09-04  The fallback source was answering; we were throwing the answer away
+
+Probed whether linkedin-profile-search had recovered. It has not: zero rows in
+12s for Booking.com and for Adyen, no error. Adyen has roughly four thousand
+employees, so "the company has nobody" is not an available explanation. Over a
+day of continuous emptiness now. linkedin-company-employees works, with one
+transient 502 that succeeded on retry.
+
+The probe was meant to answer one question and turned up a worse one.
+
+harvestapi/linkedin-company-employees HAS NO `headline` FIELD. It returns
+`summary` and a `currentPositions` array. Both renderProfiles in
+agent/tools/index.ts and label() in eval/prepare-cases.ts read only `headline`,
+so every person from that source rendered as:
+
+    Joshua Wood — no headline
+      https://www.linkedin.com/in/ACwAAAHBqUgB...
+
+while the row in hand said "Director Business Travel & Head of Booking.com for
+Business, 11 years at the company".
+
+So for the whole of the outage, on the only source that was answering, the
+agent was being asked to tell a recruiter from a hiring manager with no titles
+in front of it. That is the one judgement it exists to make, and it was being
+made blind. It would have read as the model being bad at the task — the same
+shape as every other fault this week, where the instrumentation was wrong and
+the model was not.
+
+Fixed by normalising in one place. src/agent/profile.ts reconciles both
+sources: title falls back headline -> current position (+ employer, unless the
+title already names it) -> first line of the About text -> an honest "no title
+given". Tenure is kept rather than dropped, because someone nine years at a
+company is a different kind of contact from someone who joined last month, and
+that is exactly the call being asked for. Tests use rows copied verbatim from
+live actor output — no invented row would have caught a field that simply is
+not there.
+
+The general lesson, written into the file: whenever a second source answers the
+same question, reconcile the shapes in one place, or the fallback quietly
+becomes worse than the thing it falls back to.
+
+STILL OPEN, needs a decision. The two sources return different URL forms —
+profile-search gives vanity URLs (/in/ingmarvandongen), company-employees gives
+opaque member ids (/in/ACwAAAHBqUgB...). urlKey() in the scorers normalises
+scheme and www but cannot map one form to the other, so a case graded with a
+vanity URL scores as WRONG when the agent finds the same person through the
+source that works. That is a hole in the harness merged this morning, and it
+is a design decision rather than a bug fix.
+
+Files
+  src/agent/profile.ts       (new) one shape for a person, from either source
+  src/agent/tools/index.ts   uses it; local renderProfiles deleted
+  src/eval/prepare-cases.ts  uses it; local label() deleted
+  src/agent/profile.test.ts  (new, 11 tests) rows copied from live output
+
+Tests: 75 -> 86. npm run typecheck clean.
+Spend: ~$0.35 across five probe calls, not recorded in the spend table —
+the probes call runActorViaMcp directly, which bypasses recordSpend.
