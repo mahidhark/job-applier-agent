@@ -17,8 +17,11 @@ import { loadConfig } from './config-file.js';
 import { buildSources } from './sources/index.js';
 import { screen, passed, failures } from './screen/gates.js';
 import { scoreJob } from './score/score.js';
-import { upsertJob, setState, setScore, recordGate, spentLast24h, upsertRole, setRoleId } from './store/db.js';
-import { roleKey, roleCore } from './roles/key.js';
+import {
+  upsertJob, setState, setScore, recordGate, spentLast24h, upsertRole, setRoleId, taxonomyFor,
+} from './store/db.js';
+import { roleKey, roleCore, qualifierOf } from './roles/key.js';
+import { taxonomyFromStore, unitFor } from './roles/taxonomy.js';
 
 const once = process.argv.includes('--once');
 
@@ -96,16 +99,32 @@ async function pass(): Promise<void> {
     setScore(job.id, total);
   }
 
+  // The unit comes from what the store already knows about the company.
+  //
+  // READ ONLY — no model call on the poll path. A company with no recorded
+  // taxonomy gets a single unit, which reproduces the pre-taxonomy grouping
+  // exactly, so an unattended poll can never be blocked or billed by this.
+  // Deriving a taxonomy for a new company is a deliberate act.
+  const taxonomies = new Map<string, ReturnType<typeof taxonomyFromStore>>();
+  const taxonomyOf = (company: string) => {
+    const key = company.toLowerCase();
+    let t = taxonomies.get(key);
+    if (!t) { t = taxonomyFromStore(taxonomyFor(key)); taxonomies.set(key, t); }
+    return t;
+  };
+
   const groups = new Map<string, typeof survivors>();
   for (const job of survivors) {
-    const key = roleKey(job.company, job.title);
+    const unit = unitFor(taxonomyOf(job.company), qualifierOf(job.title));
+    const key = roleKey(job.company, unit, job.title);
     const bucket = groups.get(key);
     if (bucket) bucket.push(job);
     else groups.set(key, [job]);
   }
 
   for (const [key, members] of groups) {
-    upsertRole(key, members[0]!.company, key, roleCore(members[0]!.title));
+    const unit = unitFor(taxonomyOf(members[0]!.company), qualifierOf(members[0]!.title));
+    upsertRole(key, members[0]!.company, key, roleCore(members[0]!.title), unit);
 
     // Which posting represents the group.
     //

@@ -1207,3 +1207,62 @@ Files
 Tests: 154 -> 178. npm run typecheck clean.
 Spend: two calls, roughly thirty cents. v2.0 spent about two dollars across two
 dry runs to reach a worse answer.
+
+
+2026-09-04  Step 4: roles are now per business unit, and Skydreams is two jobs
+
+roleKey takes a unit, the taxonomies are saved, the store is regrouped.
+
+    38 live postings -> 12 roles
+    26 further listings of a role already kept
+    7 roles from the old two-segment key shape removed
+
+Twelve, exactly what the dry run predicted, and the wrong merge that started
+this whole thread is gone:
+
+    Skydreams (Homedeal) — Senior Product Manager
+    Skydreams (Moving24) — Senior Product Manager
+
+Bjak is six roles under BJAK and four under KIRA. The two role cores that only
+ever carry plain qualifiers stay single, which is the arithmetic checking out
+rather than a coincidence.
+
+FINDING 7.b TURNED OUT TO BE SOMETHING ELSE. I expected to be remapping
+contacts from old-shaped role ids to new ones. In fact contacts.role_id has
+been NULL since scope A added it — recordContact never wrote it. So the remap
+did not repair broken links, it filled a column that had been empty since the
+day it appeared. Four contacts now point at a role that exists.
+
+The fifth is test:1, a dangling contact whose job is not in jobs at all — left
+over from the ESM-hoisting incident that wrote test rows into the real store.
+The WHERE EXISTS guard skipped it correctly. Flagged rather than deleted;
+removing rows from the live store is Mahi's call.
+
+TWO COUNTERS UNDER-REPORTED, both of which would have read as "nothing
+happened". Postings already in `variant` were not counted, so a re-run said
+"0 became variants" while 26 of them were. And contacts.role_id was compared
+with !=, which is never true against NULL, so the four rows actually written
+were reported as zero. Neither changed behaviour; both would have wasted
+someone's afternoon.
+
+poll.ts READS a stored taxonomy and never calls a model. A company with nothing
+recorded gets a single unit, which reproduces the pre-taxonomy grouping
+exactly — so an unattended poll can neither be blocked nor billed by this, and
+deriving a taxonomy stays a deliberate act (npm run roles -- --learn).
+
+A test asserts the single-unit case reproduces the old grouping exactly, which
+is finding 8.c: without it, every company without a taxonomy would silently
+regroup and nobody would notice.
+
+Files
+  src/roles/key.ts          roleKey(company, unit, title); slugSegment
+  src/roles/key.test.ts     +6 tests, including the inert single-unit proof
+  src/roles/taxonomy.ts     taxonomyFromStore; unitFor handles the default case
+  src/store/db.ts           run() for writes; upsertRole takes a unit
+  src/roles.ts              --learn; unit-aware backfill; contact remap;
+                            orphan role cleanup; brand names in the listing
+  src/poll.ts               reads the stored taxonomy, no model call
+  docs/role-grouping-plan-v2.1.md  §11
+
+Tests: 178 -> 183. npm run typecheck clean. No new spend — the taxonomies had
+been saved before the run() bug threw, so the regroup was free.

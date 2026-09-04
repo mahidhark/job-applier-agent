@@ -78,14 +78,33 @@ export function qualifierOf(title: string): string {
 }
 
 /**
+ * A segment safe to put in a role id.
+ *
+ * The id is `company::unit::roleCore`, so any segment containing `::` would
+ * corrupt it — and a company really can be called something like "A::B". v1.0
+ * never guarded this on the company either.
+ */
+export function slugSegment(s: string): string {
+  const out = collapse(s).toLowerCase().replace(/:+/g, '-').replace(/^-+|-+$/g, '');
+  return out || 'unknown';
+}
+
+/**
  * The role's identity, and the primary key of the `roles` table.
  *
- * Company is part of it: the same title at two employers is two roles, and
- * nothing here tries to merge across companies. Note that `company` is free
- * text from the board, so "Bjak" and "Bjak Sdn Bhd" would split a role in two.
- * That is a known boundary rather than an oversight — no source in this repo
- * gives a stable employer id.
+ * Three segments, because a role is a job at a business unit, not just at a
+ * company. Bjak advertises the same "Technical Product Lead" under BJAK and
+ * under KIRA; those are two jobs with two managers, and a two-segment key
+ * merged them.
+ *
+ * The unit comes from the company taxonomy, derived once per company. Passing
+ * `'default'` reproduces the two-segment behaviour exactly, which is what a
+ * company with one brand should get.
+ *
+ * `company` is free text from the board, so "Bjak" and "Bjak Sdn Bhd" still
+ * split a role in two. Known boundary rather than oversight — no source in
+ * this repo gives a stable employer id.
  */
-export function roleKey(company: string, title: string): string {
-  return `${collapse(company).toLowerCase()}::${roleCore(title).toLowerCase()}`;
+export function roleKey(company: string, unit: string, title: string): string {
+  return `${slugSegment(company)}::${slugSegment(unit)}::${roleCore(title).toLowerCase()}`;
 }

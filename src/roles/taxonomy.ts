@@ -109,6 +109,32 @@ export function slugifyUnit(name: string): string {
   return slug || 'unit';
 }
 
+/**
+ * Rebuild a Taxonomy from what the store holds.
+ *
+ * Read on every poll, so it must be cheap and must never call a model. A
+ * company with nothing recorded gets a single unit, which reproduces the
+ * pre-taxonomy grouping exactly.
+ */
+export function taxonomyFromStore(
+  units: Array<{ slug: string; name: string; qualifiers: string }>,
+): Taxonomy {
+  if (!units.length) {
+    return {
+      units: [{ name: 'default', description: 'no taxonomy recorded', evidence: 'default' }],
+      assignment: {}, decider: 'key', partial: false, attempts: 0,
+    };
+  }
+  const assignment: Record<string, string> = {};
+  for (const u of units) {
+    for (const qual of JSON.parse(u.qualifiers) as string[]) assignment[qual] = u.name;
+  }
+  return {
+    units: units.map((u) => ({ name: u.name, description: '', evidence: 'stored' })),
+    assignment, decider: 'store', partial: false, attempts: 0,
+  };
+}
+
 /** Everything under one roof. The fallback, and the common shape. */
 export function singleUnit(
   samples: QualifierSample[], decider: string, reason: string,
@@ -160,6 +186,11 @@ export function validateTaxonomy(t: {
  * never learn about.
  */
 export function unitFor(taxonomy: Taxonomy, qualifier: string): string {
+  // A company with one unit and no assignments is the pre-taxonomy world, and
+  // must reproduce it exactly: everything under one roof.
+  if (taxonomy.units.length === 1 && !Object.keys(taxonomy.assignment).length) {
+    return slugifyUnit(taxonomy.units[0]!.name);
+  }
   const key = qualifier.trim() || NO_QUALIFIER;
   const name = taxonomy.assignment[key];
   return name ? slugifyUnit(name) : slugifyUnit(key);
