@@ -860,3 +860,75 @@ Files
   docs/role-grouping-plan.md  §9 execution notes
 
 Tests: 109 -> 125. npm run typecheck clean. No spend.
+
+
+2026-09-04  v2.0 plan: the model judges, and corrections are recorded
+
+Mahi, after the Skydreams wrong merge: "the user is not expected to fix this
+deterministically — the model is supposed to learn this and use its own
+judgement." Both halves are right and they are different requirements.
+Judgement means the decision moves to a model. Learning means the next decision
+is informed by the last correction. v2.0 builds the second first, because
+without it the first cannot improve.
+
+I also got two things wrong in the discussion before it, and both are worth
+recording because they changed the plan.
+
+  1. I argued against an SLM on cost. That is the weak argument. Our dominant
+     cost is Apify at $0.15-0.25 per role, not tokens, and the hardware to host
+     a local model is about $17/month against a token bill smaller than that.
+     But the strong argument is TRAINABILITY: a model you can train on your own
+     corrections encodes your taste permanently, which no hosted model does.
+     I attacked the weak case and underweighted the strong one.
+
+  2. I said screening should stay model-free, which was too absolute. Look at
+     the rejections: title_wanted threw out 1,976 postings on a regex.
+     "Founder's Office Lead" matches no wanted title and might be an excellent
+     role. Nobody will ever know, because nobody reads 1,976 rejections. That
+     is a false-negative class a model would catch.
+
+     And it points somewhere useful: the best case for a small TRAINED model is
+     high-volume, narrow, repetitive judgement where the right answer is
+     whatever Mahi would have said — reviewing rejections, not enriching
+     contacts. That is the opposite of where an SLM is usually proposed. §2 of
+     the plan records it; it is not being built yet.
+
+The plan itself: roleKey becomes a candidate generator, the model decides on
+the DESCRIPTIONS rather than the titles — the answer was never in the title,
+and jobs.raw has held every description all along, which is the same shape as
+reading `headline` from a source that returns `summary`.
+
+Two rules carry most of the weight.
+
+  WHEN UNSURE, SPLIT. The errors are not symmetric. Over-splitting costs $0.14
+  twice and shows up as two queue entries. Over-merging is invisible — a job
+  never seen, a manager never contacted, no signal ever. You cannot learn from
+  an opportunity you did not know existed, so the default favours the error you
+  find out about.
+
+  THE JUDGE MUST NOT BREAK THE POLL. It runs unattended. A judge that errors
+  falls back to the v1.0 key and the group is re-judged later. Degraded
+  grouping is recoverable; a stopped poll is not.
+
+Learning is retrieval, not training: prior corrections for the same company go
+into the prompt. Works today, hosted, no GPU. And the same rows are the LoRA or
+DPO set if that is ever wanted — every path needs the same artefact, which is
+why the corrections table comes first. The system currently records none of
+them, so no path is open at all.
+
+Stress-tested across 10 dimensions: 40 findings, 22 actionable. Two worth
+naming here. #6.a — architecture.md says "screening stays model-free", and this
+puts a model next to Layer 0; the doc needs the distinction written in, or the
+next session reads a contradiction. #10.c — the corrections table becoming
+write-only is the fate of most telemetry, so step 6 makes it an eval case shape
+in the same plan rather than "later".
+
+The central assumption is NOT verified: I have not read the two Skydreams
+descriptions, so I do not know they distinguish Homedeal from Moving24. Step 2
+is a dry run for exactly that reason. If they do not, the plan is wrong, and
+better to learn it at step 2 than step 4.
+
+Files
+  docs/role-grouping-plan-v2.md  (new) plan + 10-dimension stress test
+
+No code. Tests 125, unchanged.
