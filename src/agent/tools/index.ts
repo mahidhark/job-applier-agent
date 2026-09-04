@@ -37,6 +37,17 @@ import { checkGrounding } from '../grounding.js';
 
 const COMPANY_SEARCH = 'harvestapi/linkedin-company';
 const PROFILE_SEARCH = 'harvestapi/linkedin-profile-search';
+/**
+ * Fallback for PROFILE_SEARCH, which returned zero rows for every company on
+ * 2026-09-04 — Booking.com included — having worked three hours earlier. One
+ * source for the step that turns "I know the company" into "here are its
+ * people" is a single point of failure, and it failed.
+ *
+ * Note the enum trap: this actor's profileScraperMode values carry the price
+ * inside them ("Short ($4 per 1k)") while PROFILE_SEARCH takes a plain
+ * "Short". Same field name, same publisher, different valid values.
+ */
+const COMPANY_EMPLOYEES = 'harvestapi/linkedin-company-employees';
 const PROFILE_POSTS = 'harvestapi/linkedin-profile-posts';
 
 interface CompanyHit {
@@ -63,6 +74,7 @@ export interface EnrichResult {
 export const TOOL_COST_USD: Record<string, number> = {
   resolve_company: 0.005,
   find_people_at_company: 0.1,
+  find_employees_at_company: 0.05,
   read_recent_posts: 0.02,
   record_contact: 0,
 };
@@ -75,6 +87,13 @@ export interface EnrichToolContext {
   /** Returns false when the run has spent its budget. */
   charge: (tool: string) => boolean;
 }
+
+const renderProfiles = (rows: ShortProfile[]): string =>
+  rows.map((p) => {
+    const n = `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim() || '(no name)';
+    return `${n} — ${p.headline ?? 'no headline'}\n  ${p.linkedinUrl ?? ''}` +
+           `${p.location?.linkedinText ? `\n  ${p.location.linkedinText}` : ''}`;
+  }).join('\n\n');
 
 export function buildEnrichTools(ctx: EnrichToolContext) {
   const remember = (s: string) => { ctx.transcript.text += `\n${s}`; return s; };
@@ -126,14 +145,59 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
         maxItems: 10,
       }, 10)) as ShortProfile[];
       recordSpend(PROFILE_SEARCH, TOOL_COST_USD['find_people_at_company']!, ctx.jobId);
+
       if (!rows.length) {
-        return remember('No profiles matched. Try broader titles, or drop the title filter.');
+        return remember(
+          'No profiles returned by this source. That can mean the company has nobody ' +
+          'matching, or that this source is having trouble — it cannot tell you which. ' +
+          'find_employees_at_company reads the same data from a different source; if you ' +
+          'have not tried it for this company, it is worth one call.',
+        );
       }
-      return remember(rows.map((p) => {
-        const n = `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim() || '(no name)';
-        return `${n} — ${p.headline ?? 'no headline'}\n  ${p.linkedinUrl ?? ''}` +
-               `${p.location?.linkedinText ? `\n  ${p.location.linkedinText}` : ''}`;
-      }).join('\n\n'));
+      return remember(renderProfiles(rows));
+    },
+  });
+
+  /**
+   * A second source for the same question.
+   *
+   * Exposed as its own tool rather than wired as an automatic fallback. An
+   * earlier version silently retried on empty, which took the decision away
+   * from the model on the grounds that it could not tell an outage from a real
+   * empty result. That reasoning was wrong: the right action is the same
+   * either way, so the decision never needed the diagnosis. The model gets the
+   * option and the information; it chooses.
+   */
+  const find_employees_at_company = createTool({
+    id: 'find_employees_at_company',
+    description:
+      'Find people at a company on LinkedIn using a DIFFERENT source from ' +
+      'find_people_at_company. Use it when that tool returns nothing, or when you want to ' +
+      'confirm an empty result before concluding a company has nobody suitable. Same kind of ' +
+      'answer, independent pipe.',
+    inputSchema: z.object({
+      companyLinkedinUrl: z.string().describe('Full LinkedIn company URL'),
+      jobTitles: z.array(z.string()).optional().describe('Titles to look for'),
+    }),
+    execute: async ({ companyLinkedinUrl, jobTitles }) => {
+      if (!ctx.charge('find_employees_at_company')) return refuse('find_employees_at_company');
+      const rows = (await runActorViaMcp(COMPANY_EMPLOYEES, {
+        // This actor puts the price inside the enum value; PROFILE_SEARCH takes
+        // a plain "Short". Same field name, same publisher, different values.
+        profileScraperMode: 'Short ($4 per 1k)',
+        companies: [companyLinkedinUrl],
+        ...(jobTitles?.length ? { jobTitles } : {}),
+        maxItems: 10,
+      }, 10)) as ShortProfile[];
+      recordSpend(COMPANY_EMPLOYEES, TOOL_COST_USD['find_employees_at_company']!, ctx.jobId);
+
+      if (!rows.length) {
+        return remember(
+          'No profiles from this source either. Two independent sources returning nothing ' +
+          'is reasonable evidence the company has nobody matching your filters.',
+        );
+      }
+      return remember(renderProfiles(rows));
     },
   });
 
@@ -200,5 +264,11 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
     },
   });
 
-  return { resolve_company, find_people_at_company, read_recent_posts, record_contact };
+  return {
+    resolve_company,
+    find_people_at_company,
+    find_employees_at_company,
+    read_recent_posts,
+    record_contact,
+  };
 }

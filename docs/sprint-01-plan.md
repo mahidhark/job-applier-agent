@@ -1,235 +1,288 @@
-# Sprint 1 plan — make the experiment answerable
+# Sprint 1 — the evaluation harness
 
-*Draft v1.0. Not ratified. Stress-tested across all 10 dimensions per
-`sop/stress-test-10-dimensions.md`; absorption notes in §6.*
+*v2.0. Supersedes v1.0, which was written before the Mastra refactor and before
+seven harness faults showed that measurement, not capability, was the blocker.
+Stress-tested across all 10 dimensions per `sop/stress-test-10-dimensions.md`;
+absorption notes in §7.*
 
 ## 1. Goal
 
-Two outcomes, both prerequisites for everything else:
+Make a claim about an agent that survives scrutiny.
 
-1. **The SLM question gets a real answer.** Today's qwen result says nothing
-   about qwen — the prompt was 3.2× its context window.
-2. **Outcomes start being recorded.** Nothing in either repo has ever captured
-   whether an application or a message led anywhere. This is worthless
-   retroactively.
+Today the system can say "Claude took 10 tool calls, Cerebras took 5." It
+cannot say whether either found the right person. Every model comparison so far
+has been one anecdote read by hand, and seven times the anecdote was wrong
+about the model because the harness was wrong about the run.
 
-Explicitly out of scope: drafting notes, semantic retrieval, any send path.
+Sprint 1 ends when `npm run experiment` runs a labelled case set through two
+providers and prints a table.
+
+Out of scope: infrastructure, local inference, fine-tuning, drafting notes,
+anything that sends.
 
 ## 2. Work
 
-### 2.1 Fit the prompt (blocks everything about the SLM)
+### 2.1 Case set — the dependency, and it needs Mahi
 
-**Measured:** 7 tools × ~5,800 chars = 40,750 chars of schema. Plus system
-(2,064) and job description (3,000) ≈ 13,090 tokens. Ollama's default
-`num_ctx` is 4,096. The prompt is silently truncated, which is why qwen made
-zero tool calls in 308s.
+Ten cases. Each is a posting plus the answer.
 
-- `src/ai/ollama.ts` and `src/agent/model.ts`: set `num_ctx` explicitly from
-  config rather than inheriting a default nobody chose.
-- `config/default.json`: `ai.ollama.numCtx`, default 16384.
-- `config/connections.json`: a `minimal` tool profile — the three named actors
-  only. `get-actor-run`, `abort-actor-run` and `get-key-value-store-record` are
-  run-management the goal never needs; dropping them removes ~17,600 chars.
-- `src/agent/run.ts`: log measured prompt tokens per step from the provider's
-  usage, so "did it fit" stops being an inference.
+```
+job_id, company, company_linkedin_url,
+expected_contact_name, expected_contact_url, expected_reason,
+shape: names_nobody | names_recruiter | ambiguous_company | nobody_findable
+```
 
-**Done when:** `npm run agent -- --provider ollama --tools minimal <id>`
-completes without a timeout and its first step reports a prompt that fits.
-A wrong answer is a valid result; a truncated prompt is not.
+Coverage is by shape, not count. **At least two must be `nobody_findable`**,
+where the correct answer is that no contact exists — an agent that invents one
+fails, an agent that says "I found no one" passes. Fabricating a person is the
+worst failure this system has, and nothing currently tests for it.
 
-### 2.2 Outcome capture
+`src/eval/prepare-cases.ts` pulls ten scored postings, resolves each company,
+lists the people found, and writes `data/cases/draft.json` pre-filled with
+everything verifiable. Mahi fills in the expected contact and the shape.
+Estimated: twenty minutes of his time. **Nothing downstream can start without
+this**, because a case set I write myself grades the agent against my own
+reasoning rather than against being right.
 
-- `src/store/db.ts`: an `outcomes` table — `job_id`, `contact_url`, `channel`,
-  `sent_at`, `accepted_at`, `replied_at`, `outcome`, `note`.
-- `src/queue.ts`: `--sent`, `--accepted`, `--replied`, `--rejected <id>`.
-- `npm run status`: acceptance and reply rate over the trailing 30 days, and
-  the count of contacts sent with no terminal state yet.
+Split ten into **seven tune / three held-out**. Prompt and tool changes are
+measured on the seven; the three are only ever run to confirm a change
+generalised. Without the split, tuning until the scores rise is overfitting
+that looks like progress.
 
-**Done when:** a contact can be moved through sent → accepted → replied from
-the CLI, and `status` reports rates rather than raw counts.
+### 2.2 Scorers
 
-### 2.3 Source liveness alarm
+`src/eval/scorers/` using `createScorer` from `@mastra/core/evals`.
 
-A board whose slug rotates returns zero postings and says nothing. Skydreams
-has 4 postings; a silent drop to 0 is indistinguishable from a quiet week.
+Deterministic first — free, and they cannot themselves hallucinate:
 
-- `src/store/db.ts`: record per-source posting counts per pass.
-- `npm run status`: flag any source returning zero on three consecutive passes.
+| scorer | checks |
+|---|---|
+| `answered` | committed a contact, or correctly committed none |
+| `right_company` | the contact works at the target company |
+| `grounded` | wraps the existing `checkGrounding`; its 9 tests move here |
+| `no_fabrication` | on `nobody_findable` cases, committing anyone is a fail |
+| `efficiency` | tool calls, spend, wall time — reported, not pass/fail |
 
-**Done when:** a source at zero for three passes is visible in `status`.
+One judged scorer, last: `right_person` — is this plausibly who decides? It runs
+**blind to which model produced the answer**, or a comparison judged by one of
+its own contestants flatters that contestant.
+
+### 2.3 Experiment runner
+
+`src/eval/experiment.ts` wrapping `dataset.startExperiment()`. Runs
+cases × providers, persists results, prints a table.
+
+Must report **variance, not just means**. Claude picked Tiffany on one run and
+Ingmar on two others from identical input. A single run per cell would report
+that as a difference between models. Three runs per cell minimum.
+
+### 2.4 Outcome capture
+
+Separate from scoring, and worthless retroactively — every day without it is
+evidence that cannot be recovered.
+
+- `outcomes` table: `job_id`, `contact_url`, `channel`, `sent_at`,
+  `accepted_at`, `replied_at`, `outcome`, `note`. Third-party personal data:
+  never exported, never committed.
+- `npm run queue -- --sent | --accepted | --replied | --rejected <id>`
+- `npm run status` reports acceptance and reply rate over 30 days.
+
+`jobs.state` stops at `queued`. Everything after contact lives in `outcomes`,
+so there is one authority rather than two drifting state machines.
+
+### 2.5 Two fixes today's runs exposed
+
+**`answered_none`.** The runner currently labels "searched properly, honestly
+found nobody" as failure, while the prompt explicitly instructs the model not
+to call `record_contact` in that case. Correct behaviour scored as failure.
+
+**Actor liveness.** `linkedin-profile-search` returned zero rows for every
+company on 2026-09-04, Booking.com included. A tool returning empty for
+*everything* is an outage, not an answer. Record per-actor non-empty rates;
+surface a degraded actor in `npm run status`; pass that fact to the agent so
+"this source is struggling" is information it has rather than a guess it makes.
 
 ## 3. Tests
 
-Baseline **42**; target **~56**.
+Baseline **29**; target **~50**.
 
-- `grounding.test.ts` — already 9, unchanged.
-- `outcomes.test.ts` (new, ~6): state transitions, idempotent marking, rate
-  arithmetic with zero denominators, a contact marked replied without ever
-  being sent.
-- `connections.test.ts` (+2): the `minimal` profile resolves; an unknown
-  profile is still reported rather than defaulted.
-- `sources/liveness.test.ts` (new, ~4): three consecutive zeros flags, two does
-  not, a source that recovers clears.
+- `scorers/*.test.ts` (~12): each deterministic scorer against fixtures,
+  including a `nobody_findable` case where committing anyone must fail.
+- `grounding.test.ts` (9): moves under the scorer, unchanged.
+- `outcomes.test.ts` (~6): transitions, idempotent marking, rate arithmetic
+  with a zero denominator, replied-without-sent.
+- `liveness.test.ts` (~4): three consecutive empties flags; two does not; a
+  recovery clears; an errored call is not counted as an empty one.
 
-Not unit-tested, deliberately: the Ollama context fix. It is a live-behaviour
-question and the acceptance criterion is a real run.
+Not unit-tested, deliberately: the judged scorer. Its correctness is a matter
+of agreement with Mahi, which the case set measures.
 
 ## 4. Sequence
 
-1. `git checkout -b feat/sprint-01`
-2. §2.1 context fix, then one live qwen run — it gates the rest of the sprint's
-   value
-3. §2.2 outcome capture
-4. §2.3 liveness
-5. `npm test`, `npm run typecheck`
-6. journal entry in the same commit; push
+1. `git checkout -b feat/eval-harness`
+2. §2.5 fixes — small, and they change what every later run reports
+3. §2.1 `prepare-cases.ts`, hand the sheet to Mahi
+4. §2.2 scorers while the sheet is being filled
+5. §2.3 experiment runner
+6. §2.4 outcome capture
+7. `npm test`, `npm run typecheck`, journal in the same commit, push
 
-## 5. Risks accepted
+## 5. Done when
 
-- **qwen may still fail after the fix.** That is the point; it would then be a
-  finding about the model rather than about the harness.
-- **16k context on CPU is slow.** Prompt evaluation grows with context, so a
-  fitting prompt may take minutes. Acceptable — Mahi has said slow is fine —
-  but it means the SLM's viability may turn on latency rather than quality, and
-  the run harness must record wall time per step so that is visible.
-- **Outcome data will be sparse for months.** Recording it now is still correct;
-  the alternative is having none when it finally matters.
+`npm run experiment -- --providers anthropic,cerebras` prints per-case scores
+and a summary table across three runs per cell, and a deliberate regression
+(reverting the wrapped tools) shows up as a score drop rather than needing to
+be spotted by eye.
+
+## 6. Risks accepted
+
+- **The case set encodes Mahi's judgment, not ground truth.** A contact he
+  thinks is right may never reply. Loop 2 (real outcomes) eventually corrects
+  this; Loop 1 is what can run this week.
+- **Ten cases is small.** It will catch large regressions and miss subtle
+  ones. Growing it is cheap once the runner exists.
+- **The upstream actor outage may persist**, so some rows read "source down"
+  rather than an answer. Those are worth keeping as cases in their own right.
 
 ---
 
-## 6. v1.0 10-dimension stress-test absorption notes
+## 7. v2.0 10-dimension stress-test absorption notes
 
-All 10 walked per `sop/stress-test-10-dimensions.md`. 24 findings, 9 actionable.
-Three change the plan materially and are listed first in §6.11.
+All 10 walked. 26 findings, 11 actionable. Four change the plan materially and
+are listed first in §7.11.
 
-### 6.1 #1 Edge cases (6 findings, 3 actionable)
+### 7.1 #1 Edge cases (5 findings, 2 actionable)
 
-- 1.a: raising `num_ctx` to 16384 grows the KV cache. The box has ~3GB free and
-  the model is ~2GB. **ACTIONABLE §2.1** — measure resident memory during the
-  first long run; if it swaps, the SLM's viability is a memory question, not a
-  reasoning one, and that must not be misreported as the model failing.
-- 1.b: a contact marked `replied` that was never marked `sent`. **(no action)** —
-  covered by the planned outcomes tests.
-- 1.c: acceptance rate with a zero denominator. **(no action)** — same.
-- 1.d: a board can legitimately return zero — a small company with everything
-  filled. Three zeros would false-alarm. **ACTIONABLE §2.3** — record *fetched
-  zero* separately from *errored*, and only alarm on a source that previously
-  returned postings and now returns none.
-- 1.e: the same person surfacing for two different roles at one company.
-  **(no action)** — outcomes key on (job_id, contact_url).
-- 1.f: §2.1 says to log prompt tokens "from the provider's usage". Ollama
-  returns `prompt_eval_count`, but whether `ollama-ai-provider-v2` surfaces it
-  through the AI SDK's usage object is unverified. **ACTIONABLE §2.1** — if it
-  does not, read it from `/api/chat` directly rather than inferring.
+- 1.a: a case whose company no longer exists on LinkedIn, or was renamed after
+  labelling. The expected URL then points at nothing and the scorer fails a
+  correct agent. **ACTIONABLE §2.1** — store the company URL *and* the name;
+  `right_company` matches on either.
+- 1.b: two people at one company are both defensible answers — a Head of
+  Product and a founder at a 60-person company. A single `expected_contact_url`
+  marks one correct answer wrong. **ACTIONABLE §2.1** — allow a list of
+  acceptable contacts per case, not one.
+- 1.c: `nobody_findable` where the agent finds someone *real* but not the
+  hiring manager. That is not fabrication, and scoring it as one conflates two
+  different failures. **(no action)** — `no_fabrication` checks only that the
+  committed contact exists in tool output; `right_person` judges suitability.
+- 1.d: zero denominator in acceptance rate before anything is sent.
+  **(no action)** — covered by planned tests.
+- 1.e: an experiment interrupted mid-run leaves partial results. **(no action)**
+  — `startExperiment` persists per item; a rerun overwrites by case id.
 
-### 6.2 #2 Unverified assumptions (5 findings, 3 actionable)
+### 7.2 #2 Unverified assumptions (5 findings, 3 actionable)
 
-- 2.a: **the plan named the wrong file.** §2.1 said to set `num_ctx` in
-  `src/ai/ollama.ts`. Verified at `src/agent/model.ts:15-23`: the Mastra agent
-  goes through `createOllama` from `ollama-ai-provider-v2`, and never touches
-  `src/ai/ollama.ts` at all. That fix would have changed nothing and the run
-  would have failed identically. **ACTIONABLE §2.1** — the reliable route is an
-  Ollama Modelfile (`PARAMETER num_ctx 16384`, `ollama create qwen2.5-16k`)
-  referenced by name from config, which sidesteps provider option plumbing
-  entirely. Passing `providerOptions` through the AI SDK is the alternative and
-  must be verified before being relied on.
-- 2.b: "dropping run-management tools removes ~17,600 chars" — recomputed from
-  the measured sizes: get-actor-run 6,076 + get-key-value-store-record 5,832 +
-  abort-actor-run 5,753 = 17,661, keeping `get-dataset-items` which the goal
-  does need. **✓ VERIFIED.**
-- 2.c: **16384 was sized against the FIRST request only.** Every tool result is
-  appended to the conversation, and dataset reads are large — the Claude run
-  accumulated 127,293 characters of tool output. By step six a 16k window
-  overflows regardless of how well the first prompt fit. **ACTIONABLE §2.1** —
-  the run harness must log context size per step, and the plan must treat
-  mid-run overflow as the likelier failure than the initial prompt.
-- 2.d: test baseline 42. **✓ VERIFIED** by `npm test`.
-- 2.e: `JOB_STATES` already contains `sent`. **✓ VERIFIED** at db.ts.
+- 2.a: **the plan assumed Datasets work standalone. They do not.** Verified in
+  the Mastra docs: *"Datasets require a storage adapter that provides the
+  `datasets` domain"*, configured on a `Mastra` instance (`new Mastra({ storage:
+  new LibSQLStore(...) })`). We construct `Agent` directly and have no Mastra
+  instance and no LibSQL. **ACTIONABLE §2.1/§2.3** — either stand one up, which
+  means a second database beside our better-sqlite3 store, or keep cases in our
+  own store and use only `createScorer`. See 7.11.
+- 2.b: `createScorer` import path. **✓ VERIFIED** — `@mastra/core/evals`
+  exports `createScorer` and `MastraScorer`.
+- 2.c: **the module also exports `extractTrajectory`,
+  `extractTrajectoryFromTrace` and `collectToolMocks`, none of which the plan
+  used.** Trajectory scoring grades the *sequence* of tool calls rather than
+  the final answer — which is precisely what separated raw MCP (18 searches, no
+  reads) from wrapped tools (resolve, search, refine). **ACTIONABLE §2.2** — add
+  a trajectory scorer; it measures the thing today's biggest finding was about.
+- 2.d: `collectToolMocks` implies the agent can be run against recorded tool
+  output. **ACTIONABLE §2.3** — an eval that replays fixtures costs no Apify
+  credit and is immune to the outage that confounded every run today. Live runs
+  then become an occasional check rather than the only mode.
+- 2.e: test baseline 29. **✓ VERIFIED** by `npm test`.
 
-### 6.3 #3 Actual code checks (4 findings, 1 actionable)
+### 7.3 #3 Actual code checks (4 findings, 1 actionable)
 
-- 3.a: `src/agent/model.ts` uses the AI SDK provider — the source of 2.a.
-  **ACTIONABLE**, folded into 2.a.
-- 3.b: `src/queue.ts` already parses `--sent` and `--skip`; adding flags is
-  additive. **✓ VERIFIED.**
-- 3.c: `db.ts` has jobs, gates, contacts, drafts, spend — no outcomes table.
-  **✓ VERIFIED.**
-- 3.d: `setState` accepts the `JobState` union, which includes `sent`.
-  **✓ VERIFIED.**
+- 3.a: `JOB_STATES` is `seen, rejected, scored, enriched, queued, sent,
+  skipped` — it already contains `sent`. **ACTIONABLE §2.4** — the outcomes
+  table would be a second state machine over the same idea. `jobs.state` stops
+  at `queued`; `sent` is removed from the enum or documented as unused.
+- 3.b: `checkGrounding` returns `grounded | not_found | uncheckable |
+  no_claim`. A scorer must map `uncheckable` to *no score*, never to zero, or a
+  harness fault becomes a model penalty. **✓ ALIGNED**, and the reason the
+  verdict exists.
+- 3.c: `record_contact` already refuses ungrounded commits, so a committed
+  result is grounded by construction and `grounded` will be near-constant on
+  committed answers. **(no action)** — its value is catching a regression that
+  removes the refusal.
+- 3.d: `src/agent/run.ts` writes traces to `data/runs/*.json`. **(no action)**
+  — superseded if Mastra storage lands.
 
-### 6.4 #4 Security (3 findings, 1 actionable)
+### 7.4 #4 Security (3 findings, 1 actionable)
 
-- 4.a: the outcomes table stores named third parties and their profile URLs in
-  local SQLite. Outside the repo and gitignored, so nothing is published.
-  **ACTIONABLE §2.2** — state in the schema comment that this is personal data
-  about people who did not consent to being in a database, and that it must not
-  be exported or committed.
-- 4.b: no new dependencies, no secrets, no network surface added. **(no action)**
-- 4.c: nothing in this sprint can send. **(no action)**
+- 4.a: the case set and outcomes hold named third parties and profile URLs.
+  **ACTIONABLE §2.1/§2.4** — `data/cases/` gitignored alongside `data/`, and a
+  schema comment stating this is personal data about people who did not consent
+  to being in a database.
+- 4.b: a judged scorer sends posting and profile text to a model provider.
+  **(no action)** — same exposure the agent already has.
+- 4.c: no new credentials, no new network surface. **(no action)**
 
-### 6.5 #5 Vision alignment (2 findings, 0 actionable)
+### 7.5 #5 Vision alignment (2 findings, 0 actionable)
 
-- 5.a: outcome capture serves the vision's stated intolerable outcome — "the
-  unacceptable result is not knowing". **✓ ALIGNED.**
-- 5.b: no send path is added or made easier. **✓ ALIGNED.**
+- 5.a: vision.md names the intolerable outcome as "not knowing". This sprint is
+  that, directly. **✓ ALIGNED**
+- 5.b: nothing here adds or eases a send path. **✓ ALIGNED**
 
-### 6.6 #6 Architecture consistency (2 findings, 0 actionable)
+### 7.6 #6 Architecture consistency (2 findings, 1 actionable)
 
-- 6.a: outcomes belong in `store/db.ts` beside contacts, not a new module.
-  **✓ ALIGNED.**
-- 6.b: liveness is per-source counting, which is store state, not source
-  behaviour — it goes in db.ts, and adapters stay pure. **✓ ALIGNED.**
+- 6.a: scorers belong beside the agent, not inside it. `src/eval/` is a
+  sibling of `src/agent/`. **✓ ALIGNED**
+- 6.b: if Mastra storage lands, two stores exist — ours for pipeline state,
+  LibSQL for eval. **ACTIONABLE §2.3** — point LibSQLStore at a separate file
+  under `data/` and state plainly that eval state is disposable while pipeline
+  state is not, or the distinction rots.
 
-### 6.7 #7 Impact on other features (2 findings, 1 actionable)
+### 7.7 #7 Impact on other features (3 findings, 1 actionable)
 
-- 7.a: **state-machine sub-analysis, triggered.** This adds outcome states while
-  `jobs.state` already has `sent`. Two state machines over the same idea is
-  exactly the drift the SOP warns about — a job could read `sent` while its
-  contact has no outcome row, or the reverse. Producers: `queue.ts` only.
-  Service consumers: `status.ts`, `explain.ts`. UI affordances: the CLI flags.
-  Parity holds only if one is authoritative. **ACTIONABLE §2.2** — `jobs.state`
-  stops at `queued`; everything after contact lives in `outcomes`, and
-  `queue.ts` writes one or the other, never both.
-- 7.b: `num_ctx` affects only the ollama path; Claude runs are untouched.
+- 7.a: **state-machine sub-analysis, triggered.** Outcomes add states after
+  contact while `jobs.state` already has `sent`. Producers: `queue.ts` only.
+  Consumers: `status.ts`, `explain.ts`. UI: CLI flags. Parity holds only with
+  one authority. **ACTIONABLE §2.4**, same as 3.a.
+- 7.b: the `answered_none` fix changes what every historical trace in
+  `data/runs/` means. **(no action)** — those are exploratory, not a baseline.
+- 7.c: liveness affects the agent's prompt (it is told a source is degraded),
+  so an eval run and a production run see different context. **(no action)** —
+  but the case set must record which mode it ran in.
+
+### 7.8 #8 Test coverage (3 findings, 1 actionable)
+
+- 8.a: ~31 new tests planned. **✓**
+- 8.b: nothing tests that a scorer maps `uncheckable` to no-score rather than
+  zero, which is the single failure that would re-import today's worst bug.
+  **ACTIONABLE §3** — an explicit test.
+- 8.c: the judged scorer is untested by design. **(no action)** — stated.
+
+### 7.9 #9 Deployment & rollback (2 findings, 0 actionable)
+
+- 9.a: nothing runs under pm2 for this repo; rollback is `git revert` on an
+  unmerged branch. **(no action)**
+- 9.b: the outcomes table is additive; no migration of existing rows.
   **(no action)**
 
-### 6.8 #8 Test coverage (3 findings, 1 actionable)
+### 7.10 #10 Risks (2 findings, 1 Mahi-verify)
 
-- 8.a: the context fix has no unit test; acceptance is a live run. Stated in
-  §3 rather than implied. **(no action)**
-- 8.b: nothing exercises the provider option plumbing, which 2.a shows is the
-  fragile part. **ACTIONABLE §3** — a smoke check that the configured model name
-  reaches Ollama and reports the context it was given.
-- 8.c: liveness needs a test for *recovery*, not just detection. **(no action)** —
-  already in the planned cases.
+- 10.a: ten cases catches large regressions and misses subtle ones. Accepted;
+  growing the set is cheap once the runner exists.
+- 10.b: **[Mahi-verify]** — the case set encodes your judgment of who the right
+  contact is. If that judgment is systematically off, every score inherits it
+  and the agent optimises toward the wrong target. Loop 2 (real reply data) is
+  the only correction, and it is months away. Worth deciding whether ten cases
+  labelled by one person is enough to steer on, or whether the first cases
+  should be ones where a reply actually happened.
 
-### 6.9 #9 Deployment & rollback (2 findings, 1 actionable)
-
-- 9.a: nothing in this repo runs under pm2 yet, so there is no live blast
-  radius and rollback is `git revert` on an unmerged branch. **(no action)**
-- 9.b: a Modelfile-derived model is state on the box that is not in the repo and
-  will not exist on a rebuild. **ACTIONABLE §2.1** — commit the Modelfile and
-  the `ollama create` command to the README, or the next machine silently falls
-  back to a 4,096 context and reproduces today's failure.
-
-### 6.10 #10 Risks (2 findings, 1 Mahi-verify)
-
-- 10.a: memory. Covered by 1.a. **Accepted, measured rather than assumed.**
-- 10.b: if the SLM only works at a context size the box cannot hold, the honest
-  conclusion is "not on this hardware" rather than "not possible".
-  **[Mahi-verify]** — is a GPU box in scope if CPU proves to be the binding
-  constraint? It changes what a negative result means.
-
-### 6.11 Net v1.0 changes
+### 7.11 Net v2.0 changes
 
 | Finding | Section | Change |
 |---|---|---|
-| 2.a / 3.a | §2.1 | Fix targets the wrong file. Use an Ollama Modelfile, referenced by name; verify providerOptions before relying on it |
-| 2.c | §2.1 | Size context for the whole conversation, not the first request; log context per step; expect mid-run overflow first |
-| 7.a | §2.2 | `jobs.state` stops at `queued`; outcomes own everything after contact. One authority, not two |
-| 1.a / 10.a | §2.1 | Measure resident memory during the long run; a memory ceiling must not be reported as a reasoning failure |
-| 1.d | §2.3 | Distinguish fetched-zero from errored; only alarm on a source that used to return postings |
-| 1.f | §2.1 | Verify the AI SDK surfaces `prompt_eval_count`; read `/api/chat` directly if not |
-| 4.a | §2.2 | Schema comment: third-party personal data, never exported or committed |
-| 8.b | §3 | Smoke check that the configured model and context actually reach Ollama |
-| 9.b | §2.1 | Commit the Modelfile and its create command, or a rebuild silently regresses |
+| 2.a | §2.1, §2.3 | Datasets need a Mastra instance + storage adapter. Decide: stand up LibSQL, or keep cases in our store and use only `createScorer`. Default to the latter — fewer moving parts, one database |
+| 2.c | §2.2 | Add a trajectory scorer. It grades the tool sequence, which is what the raw-vs-wrapped finding was about |
+| 2.d | §2.3 | Use `collectToolMocks` so evals replay recorded output — no Apify cost, immune to the outage that ruined today |
+| 3.a / 7.a | §2.4 | One state authority. `jobs.state` stops at `queued`; `sent` leaves the enum |
+| 1.a | §2.1 | Store company name as well as URL; match on either |
+| 1.b | §2.1 | Allow several acceptable contacts per case |
+| 4.a | §2.1, §2.4 | Gitignore `data/cases/`; note third-party personal data in the schema |
+| 6.b | §2.3 | If LibSQL lands, separate file, and state that eval state is disposable |
+| 8.b | §3 | Test that `uncheckable` scores as no-score, never zero |
