@@ -228,3 +228,58 @@ Files
   src/agent/run.ts                      --tools flag
 
 Tests: 27 -> 33. npm run typecheck clean.
+
+
+2026-09-04 (cont.) — first live agent runs, and three harness bugs they exposed
+--------------------------------------------------------------------------------
+APIFY_TOKEN set. `npm run connections` came back live: under the `narrow`
+profile Apify's MCP exposes 7 tools — the three named actors plus run
+management (get-actor-run, get-dataset-items, get-key-value-store-record,
+abort-actor-run). Small enough for a 3B model, though the names are long:
+apify_harvestapi--linkedin-company and similar have to be reproduced exactly.
+
+Test case: greenhouse:4917716101, Skydreams Senior PM - Homedeal. Chosen
+because it is the hard version — no job poster, no company LinkedIn URL, no
+website. The agent has to resolve the company itself before it can do anything.
+
+Every finding from the first two runs was a bug in the harness, not the agent.
+Recording them because each would have produced a false conclusion:
+
+  1. `--tools narrow <job-id>` parsed "narrow" as the job id. Flag VALUES were
+     not excluded from positional arguments. Only shows up when two flags are
+     combined.
+
+  2. maxSteps 10 cut Claude off one step from an answer, and the report called
+     that "NO USABLE ANSWER". Running out of budget and being unable to answer
+     are different findings; conflating them would have understated the
+     baseline. Now reported separately (answered / max_steps / no_block /
+     error) and the default is 20, because a full enrichment is resolve company
+     -> find people -> read posts with a dataset read after each.
+
+  3. Tool calls were counted twice. Mastra exposes each call under `toolCalls`
+     as {payload:{toolName,args}} AND flat inside `content`; reading both
+     reported 16 calls for 8. `toolCalls` is authoritative.
+
+  4. THE IMPORTANT ONE. toolResults store the payload at `payload.result`, and
+     the harness read `r.result` — undefined on every call. The transcript was
+     therefore empty and the grounding check reported Claude's observation as
+     ungrounded. That is a verifier accusing the model of fabricating when the
+     verifier is the thing that is broken, which is the worst way for it to
+     fail. It now distinguishes "source not found in tool output" from
+     "UNCHECKABLE — no tool output captured", and prints the transcript size
+     so an empty one is visible rather than silent.
+
+Claude baseline, once the harness was right: 8 tool calls, ~130s, zero
+hallucinated tool names. The sequence was clean — resolve Skydreams, project
+the dataset to the fields it wanted, search for product people, refine with
+explicit titles when the first search was too broad, then read one person's
+posts. Two things it did unprompted that are worth noting against the SLM
+comparison: it used `fields=` projections on every dataset read rather than
+pulling whole records, and at one point it said "the dataset already contains
+full experience data — let me read it rather than re-run", avoiding a paid
+call. Neither was asked for.
+
+Files
+  src/agent/run.ts   arg parsing, step accounting, transcript capture, stop reasons
+
+Tests: 33, unchanged. npm run typecheck clean.

@@ -24,11 +24,33 @@ import { buildEnrichAgent, enrichGoal } from './enrich-agent.js';
 import { closeMcp } from './mcp.js';
 
 const args = process.argv.slice(2);
+
+/** Flags that consume the next argument. Anything else bare is the job id. */
+const VALUE_FLAGS = new Set(['--provider', '--tools', '--max-steps']);
+
 const has = (f: string) => args.includes(f);
 const val = (f: string) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : undefined; };
-const jobId = args.find((a) => !a.startsWith('--') && !['ollama', 'anthropic'].includes(a));
 
-const MAX_STEPS = Number(val('--max-steps') ?? 10);
+/**
+ * A flag's VALUE is not a positional argument. An earlier version read
+ * `--tools narrow <id>` as job id "narrow", which is the kind of bug that
+ * only shows up the first time someone combines two flags.
+ */
+const positional = (() => {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith('--')) { if (VALUE_FLAGS.has(a)) i++; continue; }
+    out.push(a);
+  }
+  return out;
+})();
+
+const jobId = positional[0];
+// A full enrichment is resolve company -> find people -> read posts, and each
+// actor call can need a follow-up to page its dataset. Ten was too few: the
+// first Claude run was one step from an answer when it ran out.
+const MAX_STEPS = Number(val('--max-steps') ?? 20);
 const TOOL_PROFILE = val('--tools');
 
 export interface RunRecord {
@@ -39,7 +61,15 @@ export interface RunRecord {
   steps: number;
   toolCalls: Array<{ name: string; ok: boolean; argsPreview: string }>;
   unknownTools: string[];
+  /** Why it stopped. `max_steps` is not the same failure as `no answer`. */
+  stopReason: 'answered' | 'max_steps' | 'no_block' | 'error';
   finalText: string;
+  /** First raw step, verbatim. Provider step shapes differ and are undocumented
+   *  enough that guessing at a field name silently mislabels every tool call. */
+  rawFirstStep?: unknown;
+  /** Characters of tool output captured. Zero means the grounding check is
+   *  broken, not that the model invented something. */
+  transcriptChars: number;
   parsed: Record<string, string> | null;
   grounded: boolean | null;
   error?: string;
@@ -64,6 +94,7 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
   const toolCalls: RunRecord['toolCalls'] = [];
   const unknownTools: string[] = [];
   let transcript = '';
+  let rawFirstStep: unknown;
 
   try {
     const { agent, label, toolNames } = await buildEnrichAgent({
@@ -75,21 +106,51 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
     const res = await agent.generate(enrichGoal(job), {
       maxSteps: MAX_STEPS,
       onStepFinish: (step: unknown) => {
+        if (rawFirstStep === undefined) rawFirstStep = step;
+
         const s = step as {
-          toolCalls?: Array<{ toolName?: string; args?: unknown }>;
-          toolResults?: Array<{ result?: unknown }>;
+          toolCalls?: Array<Record<string, unknown>>;
+          toolResults?: Array<Record<string, unknown>>;
+          content?: Array<Record<string, unknown>>;
         };
+
+        // Mastra wraps each call as { type, runId, from, payload: { toolName, args } }
+        // while the same call ALSO appears flat inside `content`. Reading both
+        // counted every call twice — the first clean run reported 16 calls for
+        // 8 actual ones. `toolCalls` is the authoritative list; `content` is a
+        // rendering of the same events.
+        const nameOf = (c: Record<string, unknown>): string | null => {
+          const payload = c['payload'] as Record<string, unknown> | undefined;
+          const name = payload?.['toolName'] ?? c['toolName'] ?? c['name'];
+          return typeof name === 'string' ? name : null;
+        };
+        const argsOf = (c: Record<string, unknown>): unknown => {
+          const payload = c['payload'] as Record<string, unknown> | undefined;
+          return payload?.['args'] ?? c['args'] ?? c['input'] ?? {};
+        };
+
         for (const c of s.toolCalls ?? []) {
-          const name = c.toolName ?? '(unnamed)';
-          if (!known.has(name)) unknownTools.push(name);
+          const name = nameOf(c);
+          // Only a name we could actually read and that is absent from the
+          // server's list counts as hallucinated. An unreadable shape is our
+          // bug, and reporting it as the model's would be a false finding.
+          if (name && !known.has(name)) unknownTools.push(name);
           toolCalls.push({
-            name,
-            ok: known.has(name),
-            argsPreview: JSON.stringify(c.args ?? {}).slice(0, 160),
+            name: name ?? '(shape unread)',
+            ok: name ? known.has(name) : true,
+            argsPreview: JSON.stringify(argsOf(c)).slice(0, 160),
           });
         }
+
+        // The result lives at payload.result. Reading r.result yielded undefined
+        // on every call, so the transcript was empty and the grounding check
+        // reported every observation as ungrounded — a false accusation against
+        // the model, which is the worst way for a verifier to fail.
         for (const r of s.toolResults ?? []) {
-          transcript += `\n${typeof r.result === 'string' ? r.result : JSON.stringify(r.result)}`;
+          const payload = r['payload'] as Record<string, unknown> | undefined;
+          const v = payload?.['result'] ?? r['result'] ?? r['output'];
+          if (v === undefined) continue;
+          transcript += `\n${typeof v === 'string' ? v : JSON.stringify(v)}`;
         }
       },
     } as never);
@@ -111,14 +172,21 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
       }
     }
 
+    // Running out of steps is a budget outcome, not an inability to answer.
+    const stopReason: RunRecord['stopReason'] = parsed
+      ? 'answered'
+      : toolCalls.length >= MAX_STEPS ? 'max_steps' : 'no_block';
+
     return {
       provider: label, jobId: job.id, ok: Boolean(parsed), wallMs: Date.now() - started,
-      steps: toolCalls.length, toolCalls, unknownTools, finalText, parsed, grounded,
+      steps: toolCalls.length, toolCalls, unknownTools, stopReason, finalText,
+      rawFirstStep, transcriptChars: transcript.length, parsed, grounded,
     };
   } catch (err) {
     return {
       provider, jobId: job.id, ok: false, wallMs: Date.now() - started,
-      steps: toolCalls.length, toolCalls, unknownTools, finalText: '', parsed: null,
+      steps: toolCalls.length, toolCalls, unknownTools, stopReason: 'error',
+      finalText: '', rawFirstStep, transcriptChars: transcript.length, parsed: null,
       grounded: null, error: (err as Error).message,
     };
   }
@@ -126,7 +194,13 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
 
 function report(r: RunRecord): void {
   console.log(`\n  ${r.provider}`);
-  console.log(`    ${r.ok ? 'produced an answer' : 'NO USABLE ANSWER'} in ${(r.wallMs / 1000).toFixed(1)}s, ${r.steps} tool calls`);
+  const verdict = {
+    answered: 'produced an answer',
+    max_steps: `RAN OUT OF STEPS (limit ${MAX_STEPS})`,
+    no_block: 'stopped without the required block',
+    error: 'ERRORED',
+  }[r.stopReason];
+  console.log(`    ${verdict} in ${(r.wallMs / 1000).toFixed(1)}s, ${r.steps} tool calls`);
   if (r.unknownTools.length) console.log(`    hallucinated tool names: ${[...new Set(r.unknownTools)].join(', ')}`);
   for (const c of r.toolCalls) console.log(`      ${c.ok ? '·' : '✗'} ${c.name}  ${c.argsPreview}`);
   if (r.error) console.log(`    error: ${r.error}`);
@@ -134,7 +208,11 @@ function report(r: RunRecord): void {
     console.log(`    → ${r.parsed['CONTACT']}${r.parsed['TITLE'] ? ` — ${r.parsed['TITLE']}` : ''}`);
     console.log(`      ${r.parsed['PROFILE']}`);
     console.log(`      observation: ${r.parsed['OBSERVATION'] ?? 'NONE'}`);
-    console.log(`      grounded: ${r.grounded === null ? 'n/a' : r.grounded ? 'yes' : 'NO — source not in any tool output'}`);
+    const g = r.grounded === null ? 'n/a'
+      : r.grounded ? 'yes'
+      : r.transcriptChars === 0 ? 'UNCHECKABLE — no tool output was captured'
+      : 'NO — source not in any tool output';
+    console.log(`      grounded: ${g}   (${r.transcriptChars} chars of tool output seen)`);
   } else if (r.finalText) {
     console.log(`    final text did not match the required block:\n      ${r.finalText.slice(0, 300).replace(/\n/g, '\n      ')}`);
   }
