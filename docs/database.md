@@ -26,6 +26,80 @@ Everything else — scores, contacts, spend — exists to serve one of those.
 
 ## Tables
 
+### `roles` — one row per job, however many times it is advertised
+
+| column | type | note |
+|---|---|---|
+| `id` | TEXT PK | `company::unit::role core`, and the key itself |
+| `company` | TEXT | as the board wrote it |
+| `role_key` | TEXT | same as `id`; kept for readability in queries |
+| `title` | TEXT | the role core, e.g. `Technical Product Lead` |
+| `unit` | TEXT | which business unit, e.g. `kira`. `default` when a company has one |
+| `first_seen` | TEXT | ISO |
+
+**A role is a job at a business unit, not a posting.** Bjak advertises one
+Technical Product Lead opening as eight rows differing only by product line,
+and does it under two brands. Postings point at a role through `jobs.role_id`;
+one of them is the representative and the rest sit in `variant`.
+
+The id is the key, so recording the same role twice is a no-op rather than a
+second row — which is what makes the backfill safe to re-run.
+
+Every segment is slugified (`slugSegment` in `src/roles/key.ts`), because a
+company or brand called `A::B` would otherwise corrupt the id.
+
+### `company_units` — what brands a company runs
+
+| column | type | note |
+|---|---|---|
+| `company`, `slug` | TEXT | composite PK. Company is lowercased |
+| `name` | TEXT | the display name. `KIRA`, never `kira` |
+| `description` | TEXT | what this unit is |
+| `evidence` | TEXT | text from a real posting proving it exists |
+| `qualifiers` | TEXT | JSON array of the title qualifiers assigned here |
+| `decided_at` | TEXT | ISO |
+
+Derived **once per company** by a model, because which brands a company runs is
+a fact about the company. Deriving it per candidate group produced six
+independent answers for Bjak that disagreed with each other.
+
+`evidence` is required so an invented unit has to quote something. Bjak's two
+units cite `"ABOUT BJAK The original mission..."` and `"About KIRA Our mission
+is to make money smart..."` — the literal boilerplate paragraphs.
+
+**Writes are additive.** A unit already recorded keeps its name and gains new
+qualifiers; nothing is renamed. Re-deriving because one unseen qualifier turned
+up must not rename a unit that roles already point at.
+
+`npm run roles -- --learn` derives and saves. `--taxonomy` shows what it would
+say without writing. The poll only ever **reads** this table, so an unattended
+run can neither be blocked nor billed by it.
+
+### `decisions` — every judgement, and what Mahi said it should have been
+
+| column | type | note |
+|---|---|---|
+| `id` | TEXT PK | |
+| `kind` | TEXT | `group` \| `contact` \| `screen` \| `draft` \| `taxonomy` |
+| `subject` | TEXT | role id, job id, or company |
+| `context`, `chose` | TEXT | JSON: what it saw, what it decided |
+| `reasoning` | TEXT | why, in its own words |
+| `decider` | TEXT | the model id, or `key` when it fell back |
+| `corrected_at`, `corrected_to`, `correction_note` | TEXT | null until Mahi disagrees |
+
+**The substrate under every way this system can improve.** Few-shot needs
+examples, retrieval needs stored decisions, LoRA needs graded pairs, DPO needs
+chosen-against-rejected — all four are these rows. Nothing was recorded before
+this table, so no path was open at all.
+
+`correction_note` is the valuable column. *"Homedeal and Moving24 are separate
+brands"* generalises to every multi-brand parent; the corrected partition
+generalises to nothing.
+
+Not merged with `gates`, though both record why something happened. A gate row
+is per-posting per-rule and deterministic; a decision is one judgement, made by
+a model, that a human may overrule.
+
 ### `jobs` — one row per posting ever seen
 
 | column | type | note |
@@ -37,6 +111,7 @@ Everything else — scores, contacts, spend — exists to serve one of those.
 | `first_seen`, `last_seen` | TEXT | ISO. `last_seen` moves on every poll |
 | `state` | TEXT | see the state machine below |
 | `score` | REAL | null until it clears the gates |
+| `role_id` | TEXT | which role this advertises. Null until grouping runs |
 | `raw` | TEXT | the whole original posting as JSON |
 
 `raw` is kept deliberately. Every gate bug so far was found by re-reading the
@@ -71,6 +146,7 @@ a Netherlands role, which is a different bug entirely.
 | `source` | TEXT | which tool or actor produced it |
 | `context` | TEXT | the grounded observation, or null |
 | `found_at` | TEXT | ISO |
+| `role_id` | TEXT | the role, not just the posting. Filled by the backfill |
 
 `context` is only ever written when `record_contact`'s grounding check passed,
 so a row here carries a claim the tools actually supported. It is not scored
@@ -127,7 +203,7 @@ decides.
 
 ## The state machine
 
-`JOB_STATES` declares seven states. **Only five are ever written**, and knowing
+`JOB_STATES` declares eight states. **Only six are ever written**, and knowing
 which is the difference between working code and a query that silently matches
 nothing.
 
@@ -136,6 +212,9 @@ nothing.
                     │
   seen ─────────────┼───────────────► skipped         poll.ts:82, duplicate of a
   poll.ts:55        │                                 posting already kept
+                    │
+                    ├───────────────► variant          another listing of a
+                    │                                   role already kept
                     │
                     └───────────────► scored ─────────┐  poll.ts:89
                                                       │
@@ -147,6 +226,13 @@ nothing.
                                       sent                       skipped
                               queue.ts:27, a human        queue.ts:32, a human
 ```
+
+**`variant` is not a rejection.** It means "we already kept this job under
+another listing". It is deliberately *not* `skipped`, which already carried two
+unrelated meanings — a duplicate the machine dropped, and a role Mahi does not
+want. Grouping would have drowned the second in the first and made the count in
+`npm run status` meaningless. A current store reads `12 scored, 26 variant, 12
+skipped`, and all three numbers mean something.
 
 **`enriched` and `queued` are declared and never written.** Nothing sets them.
 `queue.ts` selects `state IN ('scored','enriched','queued')` and works only
@@ -163,12 +249,20 @@ Two more things before writing logic against a state:
 - **Nothing sweeps `scored` later.** The enrichment agent runs in the same pass
   that scored the posting. A job that reaches `scored` and is not enriched then
   is stranded until you run `npm run agent -- <id>` against it by hand.
+- **There is one `scored` posting per role, not per job.** The queue shows 12
+  entries for 38 live postings, and the other 26 are listed underneath the role
+  they belong to rather than competing for a slot.
 - **The state is a decision record, not a work queue.** `last_seen` moving does
   not re-open a decision. A posting rejected on Monday stays rejected on
   Tuesday even though the poll saw it again, which is the whole point of (1)
   above.
 
 ## What is deliberately NOT in here
+
+**Company taxonomies are IN here, deliberately.** They are a judgement about a
+real employer that many roles depend on, they are corrected by hand, and losing
+them would silently regroup every role. That is operational state, not eval
+state.
 
 **The eval case set.** `data/cases/cases.json`, a plain JSON file outside git.
 It is graded by hand, versioned by copying, and read only by `src/eval/`. It

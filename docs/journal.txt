@@ -1266,3 +1266,52 @@ Files
 
 Tests: 178 -> 183. npm run typecheck clean. No new spend — the taxonomies had
 been saved before the run() bug threw, so the regroup was free.
+
+
+2026-09-04  Docs caught up again, and the spend guard blocked a 7-cent job
+
+Tried to widen the funnel — two companies is not enough to build an eval case
+set from — and the daily spend guard stopped it:
+
+    ! $2.04 spent in 24h, budget $2 — paid sources skipped
+
+The guard is right and the spend is legitimate: 17 profile-search calls at
+$0.10 from earlier agent runs, plus company lookups. Today's probes are NOT in
+that figure, because they call runActorViaMcp directly and bypass recordSpend —
+so the real 24h figure is higher than the number the guard is defending.
+
+WHICH SURFACES A DESIGN PROBLEM. One budget covers two cost classes three
+orders of magnitude apart. Discovery is $0.0004 per result; a contact lookup is
+$0.14. A single daily cap means expensive enrichment starves cheap discovery,
+and right now a seven-cent operation is blocked by $2.04 of unrelated spend.
+Not fixed — a budget change is Mahi's call.
+
+Deliberately did NOT build step 6, the taxonomy correction path. Both
+taxonomies came out right, so there is no wrong one to correct, and building
+the correction mechanism now means guessing what a wrong taxonomy looks like.
+That is the mistake scope A avoided by shipping without --split, which is how
+the Skydreams merge got found rather than imagined. Widening the funnel is what
+produces a taxonomy worth correcting.
+
+So: docs, which had drifted again within hours of being fixed.
+
+database.md was missing three whole tables — roles, company_units and
+decisions — plus jobs.role_id, contacts.role_id and the variant state. All
+documented now, including why company taxonomies live in the operational store
+(they are a judgement many roles depend on) while the eval case set does not.
+
+architecture.md said "screening stays model-free" while grouping had quietly
+become a model call. That was v2.1 finding 6.a, which I wrote would "ship with
+this, not after it" — and then did not. Now written: screening runs over every
+posting ever seen and stays free and auditable; grouping runs over the 38 that
+survived and asks something no rule can answer. Different volumes, different
+guarantees, and the taxonomy is derived once per company and cached.
+
+CLAUDE.md had no src/roles/ and none of the roles commands.
+
+Files
+  docs/database.md       roles, company_units, decisions; variant; new columns
+  docs/architecture.md   LAYER 0b; the screening-versus-grouping distinction
+  CLAUDE.md              src/roles/, the roles commands, the role-not-posting rule
+
+Tests: 187, unchanged. npm run typecheck clean.

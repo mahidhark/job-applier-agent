@@ -14,6 +14,10 @@ LAYER 0  DISCOVERY & SCREENING           deterministic, no model
               ▼  gates.ts (pure) ──▶ score.ts ──▶ SQLite
               │  3,088 postings in, 38 out
               ▼
+LAYER 0b GROUPING           taxonomy: 1 model call per company, cached
+              │             then role = company::unit::roleCore, no model
+              │             38 postings ──▶ 12 roles across 4 business units
+              ▼
 LAYER 1  INFERENCE          Vercel AI SDK: anthropic | cerebras | ollama
               │             chosen per task, not globally
               ▼
@@ -37,6 +41,33 @@ for any posting later. An LLM here would be unaffordable and unauditable.
 
 Three bugs were found in one afternoon by reading gate output. None would have
 been visible if a model had made those calls.
+
+**Grouping is not screening, and it does use a model.** The distinction is
+volume and reversibility. Screening runs over every posting ever seen and must
+stay free and auditable. Grouping runs over the ~38 that survived, and asks a
+question no rule can answer: are these eight listings one job or two? Bjak
+advertises the same title under two brands, BJAK and KIRA, and the only thing
+that separates them is the boilerplate paragraph in the description.
+
+The judgement is made **once per company**, not once per group. Which brands a
+company runs is a fact about the company; deriving it per group produced six
+independent answers for Bjak that disagreed with each other. So:
+
+```
+  taxonomy   one model call per company, cached in `company_units`, correctable
+      │
+      ▼
+  grouping   NO model call.  role = company :: unit :: roleCore
+```
+
+The poll only ever **reads** the stored taxonomy. A company with none recorded
+gets a single unit, which reproduces the pre-taxonomy grouping exactly — so an
+unattended run can neither be blocked nor billed by this, and deriving a
+taxonomy stays a deliberate act (`npm run roles -- --learn`).
+
+Measured on the current store: 38 live postings, 12 roles across four business
+units. A string key alone gave 7, merging Skydreams' two brands into one and
+hiding four Bjak roles behind four others.
 
 ## Layer 2 — the tool surface is the load-bearing decision
 
