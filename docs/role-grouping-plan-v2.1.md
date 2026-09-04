@@ -406,3 +406,89 @@ rediscovered.
   inconsistency is measured rather than feared, but it is a fair question.
 - **Scope** — steps 1-3 (schema, taxonomy, dry run), or through step 4
   (re-backfill and confirm Bjak divides consistently)?
+
+---
+
+## 10. Step 3 dry run — results (2026-09-04)
+
+**Two model calls, one per company. Both assumptions hold.**
+
+### 10.1 Bjak
+
+```
+  Bjak — 48 listing(s) ... 2 unit(s)
+      BJAK  —  The core BJAK company — Southeast Asia's leading insurance
+               platform, expanding into spending, saving, investing and more.
+        evidence: "ABOUT BJAK The original mission of BJAK is we believe people
+                   deserve smarter ways to plan, save and grow their..."
+        AI Investing, AI Finance, AI Stockbroking, AI Neobank, (no qualifier)
+
+      KIRA  —  AI-focused consumer money app brand, described with its own
+               mission statement.
+        evidence: "About KIRA Our mission is to make money smart, reliable and
+                   within reach for everyone... We believe AI will he..."
+        AI Neobank App, AI Stockbroking App, AI Finance App, AI Investing App
+
+      -> 10 role(s) under this taxonomy
+```
+
+Every plain qualifier to BJAK, every `App` qualifier to KIRA, **with no
+exceptions** — and the evidence is the literal boilerplate paragraph, quoted,
+which is exactly what §3.1 assumed one 800-character excerpt would expose.
+
+### 10.2 Skydreams
+
+```
+  Skydreams — 2 listing(s) ... 2 unit(s)
+      Homedeal  —  marketplace brand for home craft/renovation professionals
+        evidence: "Our Homedeal brand is dedicated to uplifting the power of
+                   the craft..."
+      Moving24  —  moving company marketplace brand, present in 19 markets
+        evidence: "our Moving24 brand is one of the leaders in moving company
+                   marketplaces..."
+      -> 2 role(s)
+```
+
+**Finding 2.a: VERIFIED.** One excerpt per qualifier is enough.
+
+### 10.3 The consistency the whole redesign was for
+
+Bjak's six role cores, and how many units each spans:
+
+```
+  product engineer             BJAK          -> 1
+  product lead                 BJAK + KIRA   -> 2
+  product manager              BJAK + KIRA   -> 2
+  product owner, technical     BJAK          -> 1
+  technical product lead       BJAK + KIRA   -> 2
+  technical product manager    BJAK + KIRA   -> 2
+                                                10
+```
+
+Two cores carry only plain qualifiers, so they are BJAK-only — matching the
+0-App counts measured in v2.0 §12.1. The four that contain both brands now all
+divide on the same boundary. **The v2.0 inconsistency is gone by construction
+rather than by persuasion:** there is no second derivation available to
+disagree with the first.
+
+### 10.4 Three designs, on the same data
+
+| | roles | Skydreams | Bjak's mixed groups | model calls |
+|---|---|---|---|---|
+| v1.0 string key | 7 | **merged, wrongly** | all merged, wrongly | 0 |
+| v2.0 per-group judge | 11 | split correctly | **2 of 4 wrong** | 7 |
+| **v2.1 taxonomy** | **12** | **split correctly** | **4 of 4 consistent** | **2** |
+
+Fewer calls than v2.0 and a better answer. The saving is structural rather than
+lucky: one company-level question replaces one question per candidate group,
+and the ratio widens as a company posts more roles.
+
+### 10.5 Verdict
+
+Steps 1-3 are done and the gate passes. Step 4 — `roleKey` taking a unit, the
+re-backfill, and confirming the split lands in the store — is unblocked, with
+findings 7.a and 7.b (promote/demote in one pass, remap `contacts.role_id`) as
+the parts to get right.
+
+Cost: two calls, roughly thirty cents. v2.0 spent about two dollars across two
+dry runs to reach a worse answer.
