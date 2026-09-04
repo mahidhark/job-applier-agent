@@ -115,9 +115,15 @@ Three, not one: an empty result is a legitimate answer, and a company can
 genuinely have nobody findable.
 
 This exists because on 2026-09-04 `linkedin-profile-search` returned zero rows
-for every company including Booking.com, having worked three hours earlier. The
-degradation verdict is **reported to the model, not acted on** — the tool says
-an empty result is ambiguous and names the other source. The model decides.
+for every company including Booking.com, having worked three hours earlier.
+That was diagnosed as an upstream outage; it was almost certainly an exhausted
+Apify quota, which returns `SUCCEEDED` with zero rows and the reason in a
+`statusMessage` field nothing read. `runActorViaMcp` now raises on that
+directly, so this table is a second line of evidence rather than the first.
+
+The degradation verdict is **reported to the model, not acted on** — the tool
+says an empty result is ambiguous and names the other source. The model
+decides.
 
 ## The state machine
 

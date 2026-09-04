@@ -13,6 +13,7 @@
  */
 import { q, recordActorCall } from '../store/db.js';
 import { runActorViaMcp, closeMcp } from '../agent/apify.js';
+import { profileLabel, type RawProfile } from '../agent/profile.js';
 import { saveCases, CASES_PATH, type EvalCase } from './cases.js';
 import type { JobPosting } from '../sources/types.js';
 
@@ -25,13 +26,6 @@ const PROFILE_SEARCH = 'harvestapi/linkedin-profile-search';
 const COMPANY_EMPLOYEES = 'harvestapi/linkedin-company-employees';
 
 interface CompanyHit { name?: string; linkedinUrl?: string; employeeCount?: number }
-interface ShortProfile {
-  firstName?: string; lastName?: string; headline?: string; linkedinUrl?: string;
-}
-
-const label = (p: ShortProfile) =>
-  `${`${p.firstName ?? ''} ${p.lastName ?? ''}`.trim() || '(no name)'} — ` +
-  `${p.headline ?? 'no headline'} — ${p.linkedinUrl ?? 'no url'}`;
 
 async function peopleAt(url: string): Promise<string[]> {
   // Try both sources. Which one answers is not the point here; seeing who
@@ -41,9 +35,9 @@ async function peopleAt(url: string): Promise<string[]> {
     [COMPANY_EMPLOYEES, { profileScraperMode: 'Short ($4 per 1k)', companies: [url], maxItems: 10 }],
   ] as const) {
     try {
-      const rows = (await runActorViaMcp(actor, input, 10)) as ShortProfile[];
+      const rows = (await runActorViaMcp(actor, input, 10)) as RawProfile[];
       recordActorCall(actor, rows.length);
-      if (rows.length) return rows.map(label);
+      if (rows.length) return rows.map(profileLabel);
     } catch {
       recordActorCall(actor, 0, true);
     }

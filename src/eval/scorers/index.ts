@@ -23,6 +23,7 @@
 import { createScorer } from '@mastra/core/evals';
 import { createTrajectoryScorerCode } from '@mastra/evals/scorers/prebuilt';
 import { checkGrounding, normalise } from '../../agent/grounding.js';
+import { isResolvableProfileUrl } from '../../agent/profile.js';
 import type { EvalCase } from '../cases.js';
 import { readRun, urlKey, type RunFacts } from './commitment.js';
 
@@ -226,8 +227,69 @@ export const trajectory = createTrajectoryScorerCode({
   },
 });
 
+/**
+ * Was the agent given anything it could judge on?
+ *
+ * THIS SCORER GRADES US, NOT THE MODEL. Every other scorer here asks whether
+ * the agent answered well. None of them asked whether the evidence it was
+ * handed was fit to answer from — and that blind spot cost a full day.
+ *
+ * `linkedin-company-employees` was being called in Short mode, which returns
+ * no `headline` and an opaque member id in place of a profile URL. So on the
+ * only source that was answering, the agent was asked to tell a recruiter from
+ * a hiring manager with no job titles in front of it, and any answer it did
+ * commit carried a link nobody could open. Nothing in the harness noticed,
+ * because the harness only ever looked at the answer.
+ *
+ * A low score here is a bug report about the tools. It is deliberately NOT a
+ * gate: the model did not cause it and must not be penalised for it — the same
+ * rule as `grounded` refusing to score an empty transcript. When this scorer
+ * drops, read the tool layer, not the trace.
+ */
+export const evidenceUsable = createScorer({
+  id: 'evidence_usable',
+  description: 'The tool output the agent was given had job titles and openable profile URLs.',
+  type: 'agent',
+})
+  .preprocess(facts)
+  .analyze(({ results }) => {
+    const { transcript, evidenceCallCount } = results.preprocessStepResult;
+    if (!evidenceCallCount) return { rate: null, detail: 'no evidence tools were called' };
+
+    const urls = transcript.match(/https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]*/gi) ?? [];
+    const titleless = (transcript.match(/no title given/g) ?? []).length;
+    const people = urls.length;
+    if (!people) return { rate: null, detail: 'no people came back at all' };
+
+    const openable = urls.filter(isResolvableProfileUrl).length;
+    const withTitle = people - Math.min(titleless, people);
+    // Both halves have to hold: a name you cannot judge is as useless as a
+    // person you cannot reach.
+    const rate = (openable / people) * (withTitle / people);
+    return {
+      rate,
+      detail: `${openable}/${people} profile URLs open, ${withTitle}/${people} carry a job title`,
+    };
+  })
+  .generateScore(({ results }) => results.analyzeStepResult.rate ?? 1)
+  .generateReason(({ results }) => {
+    const { rate, detail } = results.analyzeStepResult;
+    if (rate === null) return `${detail} — nothing to judge the evidence on`;
+    return rate === 1
+      ? `evidence was complete: ${detail}`
+      : `EVIDENCE WAS THIN — ${detail}. This is a fault in the tool layer, not the model.`;
+  });
+
 /** Must all score 1. A run that fails one of these is not a worse run, it is a wrong one. */
 export const GATES = [noFabrication, grounded];
 
 /** Scored and averaged, per provider, per case. */
 export const SCORERS = [answered, rightContact];
+
+/**
+ * Graded, reported separately, and never mixed into the model's score.
+ *
+ * Averaging a harness measurement into a model comparison is how a broken tool
+ * becomes "the small model is worse".
+ */
+export const HARNESS_SCORERS = [evidenceUsable];

@@ -34,6 +34,7 @@ import { z } from 'zod';
 import { recordContact, recordSpend, recordActorCall, actorHealth } from '../../store/db.js';
 import { runActorViaMcp } from '../apify.js';
 import { checkGrounding } from '../grounding.js';
+import { renderProfiles, isResolvableProfileUrl, type RawProfile } from '../profile.js';
 
 const COMPANY_SEARCH = 'harvestapi/linkedin-company';
 const PROFILE_SEARCH = 'harvestapi/linkedin-profile-search';
@@ -43,6 +44,11 @@ const PROFILE_SEARCH = 'harvestapi/linkedin-profile-search';
  * source for the step that turns "I know the company" into "here are its
  * people" is a single point of failure, and it failed.
  *
+ * Caveat learned later the same day: two sources are not independent when one
+ * account pays for both. That emptiness was almost certainly an exhausted
+ * Apify quota, which takes out every actor at once. apify.ts raises on it now,
+ * so this fallback covers a source failing rather than the bill failing.
+ *
  * Note the enum trap: this actor's profileScraperMode values carry the price
  * inside them ("Short ($4 per 1k)") while PROFILE_SEARCH takes a plain
  * "Short". Same field name, same publisher, different valid values.
@@ -50,14 +56,26 @@ const PROFILE_SEARCH = 'harvestapi/linkedin-profile-search';
 const COMPANY_EMPLOYEES = 'harvestapi/linkedin-company-employees';
 const PROFILE_POSTS = 'harvestapi/linkedin-profile-posts';
 
+/**
+ * Exactly what `normaliseProfile` reads, and nothing else.
+ *
+ * A full LinkedIn profile is 66k-109k characters — measured, one at 109,425 —
+ * because every job in the person's history carries the whole employer object.
+ * Ten of them is most of a megabyte per call. None of it reaches the model, but
+ * all of it crosses the transport and gets parsed, and there is no reason to
+ * move a megabyte to render six lines.
+ */
+const PROFILE_FIELDS = [
+  'firstName', 'lastName', 'headline', 'summary', 'linkedinUrl', 'publicIdentifier',
+  'hiring', 'location.linkedinText',
+  'currentPositions.title', 'currentPositions.companyName',
+  'currentPositions.current', 'currentPositions.tenureAtCompany',
+].join(',');
+
 interface CompanyHit {
   name?: string; linkedinUrl?: string; website?: string | null;
   employeeCount?: number; tagline?: string;
   locations?: Array<{ parsed?: { text?: string } }>;
-}
-interface ShortProfile {
-  firstName?: string; lastName?: string; headline?: string;
-  linkedinUrl?: string; location?: { linkedinText?: string };
 }
 interface Post { content?: string; text?: string; postedAt?: string }
 
@@ -74,7 +92,7 @@ export interface EnrichResult {
 export const TOOL_COST_USD: Record<string, number> = {
   resolve_company: 0.005,
   find_people_at_company: 0.1,
-  find_employees_at_company: 0.05,
+  find_employees_at_company: 0.1,
   read_recent_posts: 0.02,
   record_contact: 0,
   record_no_contact: 0,
@@ -96,13 +114,6 @@ export interface EnrichToolContext {
   /** Returns false when the run has spent its budget. */
   charge: (tool: string) => boolean;
 }
-
-const renderProfiles = (rows: ShortProfile[]): string =>
-  rows.map((p) => {
-    const n = `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim() || '(no name)';
-    return `${n} — ${p.headline ?? 'no headline'}\n  ${p.linkedinUrl ?? ''}` +
-           `${p.location?.linkedinText ? `\n  ${p.location.linkedinText}` : ''}`;
-  }).join('\n\n');
 
 export function buildEnrichTools(ctx: EnrichToolContext) {
   const remember = (s: string) => { ctx.transcript.text += `\n${s}`; return s; };
@@ -153,7 +164,7 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
         currentCompanies: [companyLinkedinUrl],
         ...(jobTitles?.length ? { currentJobTitles: jobTitles } : {}),
         maxItems: 10,
-      }, 10)) as ShortProfile[];
+      }, 10, PROFILE_FIELDS)) as RawProfile[];
       recordSpend(PROFILE_SEARCH, TOOL_COST_USD['find_people_at_company']!, ctx.jobId);
       recordActorCall(PROFILE_SEARCH, rows.length);
 
@@ -204,11 +215,21 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
       const rows = (await runActorViaMcp(COMPANY_EMPLOYEES, {
         // This actor puts the price inside the enum value; PROFILE_SEARCH takes
         // a plain "Short". Same field name, same publisher, different values.
-        profileScraperMode: 'Short ($4 per 1k)',
+        // FULL, NOT SHORT, and the difference is not detail — it is whether the
+        // answer is usable at all. Measured on the same company: Short returns
+        // no `headline`, no `publicIdentifier`, and an OPAQUE MEMBER ID in
+        // `linkedinUrl` (/in/ACwAAAHBqUgB...) which does not resolve. Full
+        // returns /in/rachitchaudhary, a headline, and LinkedIn's #hiring flag.
+        // We were paying for a source, getting a dead link and no job title,
+        // and reading that as the source being weak.
+        //
+        // $0.02 start + $0.008/profile = $0.10 at ten, up from $0.05 — the same
+        // price as find_people_at_company, which currently returns nothing.
+        profileScraperMode: 'Full ($8 per 1k)',
         companies: [companyLinkedinUrl],
         ...(jobTitles?.length ? { jobTitles } : {}),
         maxItems: 10,
-      }, 10)) as ShortProfile[];
+      }, 10, PROFILE_FIELDS)) as RawProfile[];
       recordSpend(COMPANY_EMPLOYEES, TOOL_COST_USD['find_employees_at_company']!, ctx.jobId);
       recordActorCall(COMPANY_EMPLOYEES, rows.length);
 
@@ -264,6 +285,17 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
     execute: async (input) => {
       const observation = (input.observation ?? '').trim();
       const source = (input.observationSource ?? '').trim();
+
+      // A dead link is not a smaller answer, it is no answer: the point of the
+      // run is that a human can open the profile and write to them. The model
+      // cannot check this from inside its loop — an opaque member id looks
+      // exactly like a URL — so it is enforced here and explained.
+      if (!isResolvableProfileUrl(input.profileUrl)) {
+        return `REFUSED: "${input.profileUrl}" is not a profile link anyone can open. ` +
+               `A LinkedIn member id (/in/ACw...) is not a usable URL. Find this person ` +
+               `again with find_employees_at_company, which returns real profile URLs, ` +
+               `or commit a different candidate whose link opens.`;
+      }
 
       const g = checkGrounding(observation, source, ctx.transcript.text);
       if (g.verdict === 'not_found') {

@@ -58,7 +58,10 @@ npm run typecheck
 
 No API key is needed for the free boards. `APIFY_TOKEN` unlocks paid LinkedIn
 discovery *and* the enrichment agent; without it, discovery skips that source
-with a warning and the agent refuses to start. `ANTHROPIC_API_KEY` or
+with a warning and the agent refuses to start. **An Apify account that has hit
+its plan limit does not error** — every actor returns `SUCCEEDED` with zero
+rows and the reason in `statusMessage`. The agent raises on that rather than
+reporting "this company has nobody", which is what it looks like otherwise. `ANTHROPIC_API_KEY` or
 `CEREBRAS_API_KEY` pick the model — Ollama needs neither.
 
 ## Sources

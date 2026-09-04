@@ -597,3 +597,144 @@ Files
   CLAUDE.md               src/agent, src/eval, commands, the five traps
 
 Tests: 75, unchanged. npm run typecheck clean.
+
+
+2026-09-04  The fallback source was answering; we were throwing the answer away
+
+Probed whether linkedin-profile-search had recovered. It has not: zero rows in
+12s for Booking.com and for Adyen, no error. Adyen has roughly four thousand
+employees, so "the company has nobody" is not an available explanation. Over a
+day of continuous emptiness now. linkedin-company-employees works, with one
+transient 502 that succeeded on retry.
+
+The probe was meant to answer one question and turned up a worse one.
+
+harvestapi/linkedin-company-employees HAS NO `headline` FIELD. It returns
+`summary` and a `currentPositions` array. Both renderProfiles in
+agent/tools/index.ts and label() in eval/prepare-cases.ts read only `headline`,
+so every person from that source rendered as:
+
+    Joshua Wood — no headline
+      https://www.linkedin.com/in/ACwAAAHBqUgB...
+
+while the row in hand said "Director Business Travel & Head of Booking.com for
+Business, 11 years at the company".
+
+So for the whole of the outage, on the only source that was answering, the
+agent was being asked to tell a recruiter from a hiring manager with no titles
+in front of it. That is the one judgement it exists to make, and it was being
+made blind. It would have read as the model being bad at the task — the same
+shape as every other fault this week, where the instrumentation was wrong and
+the model was not.
+
+Fixed by normalising in one place. src/agent/profile.ts reconciles both
+sources: title falls back headline -> current position (+ employer, unless the
+title already names it) -> first line of the About text -> an honest "no title
+given". Tenure is kept rather than dropped, because someone nine years at a
+company is a different kind of contact from someone who joined last month, and
+that is exactly the call being asked for. Tests use rows copied verbatim from
+live actor output — no invented row would have caught a field that simply is
+not there.
+
+The general lesson, written into the file: whenever a second source answers the
+same question, reconcile the shapes in one place, or the fallback quietly
+becomes worse than the thing it falls back to.
+
+STILL OPEN, needs a decision. The two sources return different URL forms —
+profile-search gives vanity URLs (/in/ingmarvandongen), company-employees gives
+opaque member ids (/in/ACwAAAHBqUgB...). urlKey() in the scorers normalises
+scheme and www but cannot map one form to the other, so a case graded with a
+vanity URL scores as WRONG when the agent finds the same person through the
+source that works. That is a hole in the harness merged this morning, and it
+is a design decision rather than a bug fix.
+
+Files
+  src/agent/profile.ts       (new) one shape for a person, from either source
+  src/agent/tools/index.ts   uses it; local renderProfiles deleted
+  src/eval/prepare-cases.ts  uses it; local label() deleted
+  src/agent/profile.test.ts  (new, 11 tests) rows copied from live output
+
+Tests: 75 -> 86. npm run typecheck clean.
+Spend: ~$0.35 across five probe calls, not recorded in the spend table —
+the probes call runActorViaMcp directly, which bypasses recordSpend.
+
+
+2026-09-04  "The source is down" was the bill
+
+Went looking for whether linkedin-profile-search had recovered. It has not,
+and the reason is not what yesterday's entry says it is.
+
+    {"status":"SUCCEEDED","statusMessage":"free user run limit exceeded",
+     "stats":{"runTimeSecs":4.707},
+     "storages":{"datasets":{"default":{"itemCount":0}}}}
+
+An Apify account at its plan limit does not error. Every actor returns
+SUCCEEDED in under five seconds with zero rows and the reason in
+`statusMessage` — a field nothing in this repo read. Reported upward as an
+empty result it becomes a lie the whole way: the tool tells the model "no
+profiles at this company", the model reasonably concludes nobody is there, and
+a billing problem is written down as a fact about a business.
+
+That is what the day-long "outage" almost certainly was. I diagnosed it as
+upstream, wrote it into architecture.md, database.md and two source comments,
+and built actor_calls + actorHealth() to infer degradation from repeated
+emptiness. The answer was in every single response. Corrected in all five
+places rather than left standing — a doc recording a wrong diagnosis is worse
+than no doc. actorHealth() stays as corroboration; it is no longer the primary
+signal it was built to be.
+
+Also learned: TWO SOURCES ARE NOT INDEPENDENT WHEN ONE ACCOUNT PAYS FOR BOTH.
+The fallback was designed against one source failing. A quota takes out every
+actor at once, and no amount of switching sources helps.
+
+runActorViaMcp now raises ActorBlockedError when a run produced no rows and
+said why. Deliberately an exception rather than a message to the model: an
+account limit is not something a different query can work around, so handing
+it to the model as something to judge would be asking it to solve a problem it
+cannot reach. This is the "unverifiable from inside the loop" half of the rule
+the agent is built on.
+
+THE OTHER HALF WENT TO THE MODEL. Mahi's question — could the model not judge
+this itself, is there a feedback loop — splits cleanly:
+
+  - "these people have no job titles, I cannot pick between them" IS judgeable
+    in-loop. The model had no lever and no way to know it was unusual. It is
+    now told, with counts, by evidenceWarning(), and left to decide.
+  - "this URL does not resolve" is NOT judgeable in-loop. An opaque member id
+    looks exactly like a URL from where the model sits. record_contact refuses
+    one and names the fix.
+  - and the third thing, which was the real answer: NOTHING GRADED THE
+    EVIDENCE. Every scorer written yesterday grades the agent's answer. None
+    asked whether what it was handed was fit to answer from. `evidence_usable`
+    does now — it scores the tool layer, is reported separately from the model
+    comparison, and is deliberately not a gate. Averaging a harness measurement
+    into a model score is how a broken tool becomes "the small model is worse".
+
+The Short-mode finding that started this: linkedin-company-employees in Short
+mode returns no headline, no publicIdentifier, and an OPAQUE MEMBER ID in
+linkedinUrl (/in/ACwAAAHBqUgB...) that does not resolve. Full mode returns
+/in/rachitchaudhary, a headline, and LinkedIn's #hiring flag. Same actor, one
+enum value. Switched to Full, $0.05 -> $0.10 per call, which is the same price
+as find_people_at_company.
+
+Full profiles are 66k-109k chars each because every past job carries the whole
+employer object, so runActorViaMcp takes an optional field projection and both
+people-tools use it. Ten profiles goes from most of a megabyte to a few
+kilobytes. None of it ever reached the model — the tools render first — but all
+of it crossed the transport.
+
+Files
+  src/agent/apify.ts         ActorBlockedError; field projection; __test export
+  src/agent/apify.test.ts    (new, 8 tests) run records copied from live output
+  src/agent/profile.ts       usability, resolvable-URL check, evidenceWarning
+  src/agent/tools/index.ts   Full mode, projection, cost 0.10, refuses dead links
+  src/eval/scorers/index.ts  evidence_usable; HARNESS_SCORERS kept separate
+  README.md, CLAUDE.md, docs/architecture.md, docs/database.md, src/store/db.ts
+                             outage diagnosis corrected in all five
+
+Tests: 86 -> 109. npm run typecheck clean.
+Spend: ~$0.62 across nine probe calls, none recorded in the spend table.
+
+NEEDS MAHI: the Apify account is at its free-tier limit. Nothing that calls an
+actor works until that is resolved — not the agent, not cases:prepare, not the
+paid discovery source. The free ATS boards are unaffected.

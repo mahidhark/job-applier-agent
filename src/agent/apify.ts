@@ -70,6 +70,54 @@ function parseItems(raw: string): unknown[] | null {
   }
 }
 
+/**
+ * Why a run produced nothing, when the run itself says so.
+ *
+ * Apify returns `status: "SUCCEEDED"` with zero items and the real reason in
+ * `statusMessage` — for example `"free user run limit exceeded"`. Read as a
+ * plain empty result, that is a lie the whole way up the stack: the tool tells
+ * the model "no profiles at this company", the model reasonably concludes
+ * nobody is there, and a quota problem is recorded as a fact about a business.
+ *
+ * That happened. `linkedin-profile-search` returned zero rows for every
+ * company including Booking.com for a day; it was diagnosed as an upstream
+ * outage and a health-tracking table was built to infer it from repeated
+ * emptiness. The answer was in `statusMessage` on every single response.
+ *
+ * These messages are about the ACCOUNT, not the query. A different search will
+ * not fix one, so the model must not be handed it as something to work around
+ * — it is raised, and a human is told.
+ */
+const BLOCKING_STATUS = /run limit|usage limit|quota|exceeded|insufficient|payment|not enough|unauthorized|forbidden/i;
+
+interface RunRecord {
+  status?: string;
+  statusMessage?: string;
+  storages?: { datasets?: { default?: { id?: string; itemCount?: number } } };
+}
+
+export class ActorBlockedError extends Error {
+  override readonly name = 'ActorBlockedError';
+  constructor(readonly actor: string, readonly statusMessage: string) {
+    super(`${actor} produced nothing: "${statusMessage}". This is an account or quota ` +
+          `problem, not an empty search — no query will work until it is resolved.`);
+  }
+}
+
+/** The run's own explanation, when it produced no rows and gave one. */
+function blockingMessage(raw: string): string | null {
+  try {
+    const o = JSON.parse(raw) as RunRecord;
+    const msg = o.statusMessage?.trim();
+    if (!msg) return null;
+    const count = o.storages?.datasets?.default?.itemCount;
+    if (count) return null; // it produced rows; whatever it said, it worked
+    return BLOCKING_STATUS.test(msg) ? msg : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Dataset id, wherever the response happens to put it. */
 function findDatasetId(raw: string): string | null {
   try {
@@ -107,6 +155,19 @@ export async function runActorViaMcp(
   actor: string,
   input: Record<string, unknown>,
   maxItems = 25,
+  /**
+   * Comma-separated field projection, e.g. `firstName,linkedinUrl,headline`.
+   *
+   * Needed because a full LinkedIn profile is 66k-109k characters — measured,
+   * with one at 109,425 — and ten of them is most of a megabyte per call. None
+   * of it reaches the model (the tools render before returning), but all of it
+   * has to cross the transport and be parsed.
+   *
+   * Passing this SKIPS the inline-items shortcut below, because `call-actor`
+   * returns whole records and only `get-dataset-items` can project. That costs
+   * one extra round trip and saves three orders of magnitude of payload.
+   */
+  fields?: string,
 ): Promise<unknown[]> {
   const c = await apifyMcp();
   const run = await c.callTool({
@@ -116,9 +177,11 @@ export async function runActorViaMcp(
 
   const blocks = textBlocks(run);
 
-  for (const b of blocks) {
-    const items = parseItems(b);
-    if (items?.length) return items.slice(0, maxItems);
+  if (!fields) {
+    for (const b of blocks) {
+      const items = parseItems(b);
+      if (items?.length) return items.slice(0, maxItems);
+    }
   }
 
   for (const b of blocks) {
@@ -126,12 +189,37 @@ export async function runActorViaMcp(
     if (!id) continue;
     const got = await c.callTool({
       name: 'get-dataset-items',
-      arguments: { datasetId: id, limit: maxItems, clean: true },
+      arguments: { datasetId: id, limit: maxItems, clean: true, ...(fields ? { fields } : {}) },
     });
     for (const gb of textBlocks(got)) {
       const items = parseItems(gb);
-      if (items) return items.slice(0, maxItems);
+      if (items?.length) return items.slice(0, maxItems);
+      // Zero items is where the lie lives: ask the run record why before
+      // agreeing that the company has nobody.
+      if (items) {
+        for (const b of blocks) {
+          const msg = blockingMessage(b);
+          if (msg) throw new ActorBlockedError(actor, msg);
+        }
+        return [];
+      }
     }
+  }
+
+  // A projection that matched nothing still leaves the inline records readable,
+  // and a large answer beats no answer.
+  if (fields) {
+    for (const b of blocks) {
+      const items = parseItems(b);
+      if (items?.length) return items.slice(0, maxItems);
+    }
+  }
+
+  // Before calling it unreadable, check whether the run explained itself. An
+  // account limit is not an empty search and must never be reported as one.
+  for (const b of blocks) {
+    const msg = blockingMessage(b);
+    if (msg) throw new ActorBlockedError(actor, msg);
   }
 
   // An empty result is a real answer; an unreadable one is not. Raising here
@@ -141,3 +229,6 @@ export async function runActorViaMcp(
     `${textOf(run).slice(0, 200)}`,
   );
 }
+
+/** Exposed for tests only: the run-record reading that has been wrong twice. */
+export const __test = { blockingMessage };
