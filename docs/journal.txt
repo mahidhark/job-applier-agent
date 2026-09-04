@@ -118,3 +118,60 @@ Files
   src/config-file.ts                           ai wired + validated
 
 Tests: 14 -> 21. npm run typecheck clean.
+
+
+2026-09-04 (cont.) — goal-directed agent on Mastra, and the SLM comparison
+----------------------------------------------------------------------------
+Mahi corrected the framing: not a deterministic pipeline with one model call
+in it, but an SLM given a GOAL at runtime, reaching Apify through MCP, judging
+what comes back, orchestrated by Mastra. Built that.
+
+I had argued against a framework twice on the grounds that it would normalise
+both providers behind its own adapter and so measure the adapter rather than
+the models. That objection is real but it is answerable by measurement rather
+than by argument, and it is his call. Both paths now exist, which turns the
+disagreement into an experiment:
+
+  src/enrich/   hand-rolled loop, narrow hand-written tools    (baseline)
+  src/agent/    Mastra Agent, full Apify MCP tool surface      (the bet)
+
+The second is materially more ambitious. The agent is not given wrappers I
+wrote — it gets Apify's own MCP tools and can search the store, read an
+actor's input schema, and run it. Discovering that an actor exists is part of
+the job rather than something a developer anticipated.
+
+Stack: @mastra/core 1.64, @mastra/mcp 1.17, ai 7.0.92, ollama-ai-provider-v2
+for the local path, @ai-sdk/anthropic for the baseline. Both models reach
+Mastra through the Vercel AI SDK, so the orchestrator does not know which is
+which — one goal, one tool surface, one orchestrator, model as the only
+variable.
+
+src/agent/run.ts records what actually matters for a small model in a loop,
+which is not pass/fail:
+  - hallucinated tool names (checked against the real MCP tool list)
+  - number of tool calls and wall time per run
+  - whether the final block came back in the required shape at all
+  - whether the observation is GROUNDED: its quoted SOURCE must appear in
+    something a tool returned, same rule as everywhere else in this system
+
+`npm run agent -- --compare <job-id>` runs both on identical input and writes
+the full trace to data/runs/.
+
+NOT YET RUN. APIFY_TOKEN is unset in this environment, so the Mastra path is
+typecheck-clean and completely unexercised. Nothing here should be trusted
+until it has run once against both providers.
+
+Known risk worth stating before the first run: the Apify MCP surface is large
+and the tool names are namespaced (apify_call-actor and similar). A 3B model
+has to reproduce those exactly, and the generic call-actor schema is big. If
+qwen fails, tool-name accuracy and schema size are the first things to look at
+before concluding the model cannot hold a goal.
+
+Files
+  src/agent/{model,mcp,enrich-agent,run}.ts   (new)
+  src/enrich/tools.ts                          resolve_company added; observation
+                                               now requires a verbatim citation
+                                               checked against tool output
+  src/enrich/tools.test.ts                     (new, 6 tests on the grounding check)
+
+Tests: 21 -> 27. npm run typecheck clean.
