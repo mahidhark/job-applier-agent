@@ -66,6 +66,14 @@ declared price:
 | `record_contact` | — commits a person | $0 |
 | `record_no_contact` | — commits that nobody is reachable | $0 |
 
+Those are **Free/Bronze-tier prices**. Apify's Store discount tier comes with
+the subscription plan — Free and Starter both sit at Bronze pricing for these
+actors, Scale reaches Silver ($0.08 / $0.006) and Business Gold ($0.05 /
+$0.004). At this project's volume the discount never pays for the plan: Scale
+costs $180/month more and would need roughly nine hundred enrichment runs a
+month to break even. Starter exists here to clear the free-plan run cap, not to
+buy a discount.
+
 Two sources answer the same question deliberately. On 2026-09-04
 `linkedin-profile-search` returned zero rows for every company including
 Booking.com, having worked three hours earlier.
@@ -86,8 +94,15 @@ lie the whole way up: the tool tells the model "no profiles at this company",
 the model concludes nobody is there, and a billing problem is recorded as a
 fact about a business. `runActorViaMcp` now raises `ActorBlockedError` on it,
 because no query will fix an account limit and the model must not be asked to
-work around one. Two sources are still right — but they were never independent
-of the account paying for both.
+work around one.
+
+Two sources are still right, but the independence claimed for them is thinner
+than it looked. They were never independent of the account paying for both — a
+plan cap takes out every actor at once. And once both were running in Full mode
+against the same company they returned **the same three people in the same
+order**, which is what one publisher over one backend looks like. So the
+fallback covers an actor failing, not a data provider failing. A genuinely
+independent second source would have to come from outside harvestapi.
 
 **Both ways of finishing are tool calls.** `record_no_contact` exists because
 "there is nobody to approach" is an answer, and an answer has to be committed

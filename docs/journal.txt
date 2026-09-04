@@ -738,3 +738,51 @@ Spend: ~$0.62 across nine probe calls, none recorded in the spend table.
 NEEDS MAHI: the Apify account is at its free-tier limit. Nothing that calls an
 actor works until that is resolved — not the agent, not cases:prepare, not the
 paid discovery source. The free ATS boards are unaffected.
+
+
+2026-09-04  Starter plan bought; the cap was the whole story
+
+Mahi subscribed to Apify Starter ($19/month, Bronze tier). Both people-sources
+answered immediately. So linkedin-profile-search was never down at any point —
+it was capped for free-plan accounts, and returned SUCCEEDED with zero rows for
+a day while I recorded an upstream outage in four documents and built a health
+table to infer it. The corrected account now has evidence behind it rather than
+inference.
+
+Starter is the right tier and nothing above it is. The $19 is prepaid usage
+rather than a fee, and Bronze prices these actors identically to Free — it
+exists to clear the cap, not to buy a discount. Scale would cost $180/month
+more for roughly a 20% unit discount, needing about nine hundred enrichment
+runs a month to break even. This project will use tens.
+
+THE FIRST REAL RUN CAUGHT THE NEXT BUG BY ITSELF. The evidence warning added
+hours earlier fired unprompted:
+
+    NOTE: 3 of 3 have a profile URL that will not open.
+
+profile-search in Short mode also returns opaque member ids, and About text
+where a headline belongs. The URL problem was never specific to one actor —
+both people-sources had it, and only one had been fixed. Switched this one to
+Full as well; its own default was already 'Full', so we had been explicitly
+overriding a sensible default with the broken one. $0.10 -> $0.14 per call.
+
+That is the feedback loop working as intended, and it is worth being precise
+about why: the warning is not clever. It counts rows with no title and rows
+with an unopenable URL. What made it valuable is that nothing had been looking
+at the evidence at all — every check in the repo graded the answer.
+
+Same three people from both sources afterwards, identical and in the same
+order. That says the two actors share a backend, so the fallback covers one
+actor failing rather than a data provider failing. Corrected in
+architecture.md, which had claimed more independence than exists. A genuinely
+independent second source would have to come from outside harvestapi.
+
+Files
+  src/agent/tools/index.ts  profile-search to Full mode, cost 0.10 -> 0.14
+  README.md, CLAUDE.md      plan-tier correction: per actor, not account wide;
+                            a tier check, not a balance one
+  docs/architecture.md      tier pricing note; independence claim narrowed
+
+Tests: 109, unchanged. npm run typecheck clean.
+Spend: ~$0.30 in probes today after the plan change, none recorded in the
+spend table.

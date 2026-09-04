@@ -58,10 +58,19 @@ npm run typecheck
 
 No API key is needed for the free boards. `APIFY_TOKEN` unlocks paid LinkedIn
 discovery *and* the enrichment agent; without it, discovery skips that source
-with a warning and the agent refuses to start. **An Apify account that has hit
-its plan limit does not error** — every actor returns `SUCCEEDED` with zero
-rows and the reason in `statusMessage`. The agent raises on that rather than
-reporting "this company has nobody", which is what it looks like otherwise. `ANTHROPIC_API_KEY` or
+with a warning and the agent refuses to start.
+
+**The Apify account needs a paid plan, and this is a tier check rather than a
+balance one.** The LinkedIn people-scrapers cap free-plan accounts, and a
+capped run does not error: it returns `SUCCEEDED` in under five seconds with
+zero rows and the reason in `statusMessage`. Read as an empty search that
+becomes "this company has nobody", so the agent raises `ActorBlockedError`
+instead. Adding credit to a Free plan does not help — Starter ($19/month, and
+the $19 is usage credit rather than a fee) moves the account to the Bronze
+tier, which is what the limit keys off. Cheap actors such as company lookup
+keep working on Free, so discovery and screening are unaffected; it is
+specifically the step from "I know the company" to "here are its people" that
+stops. `ANTHROPIC_API_KEY` or
 `CEREBRAS_API_KEY` pick the model — Ollama needs neither.
 
 ## Sources
