@@ -101,4 +101,57 @@ describe('what the next judgement is shown', () => {
   });
 });
 
+
+describe('the company taxonomy', () => {
+  test('round-trips units and their qualifiers', () => {
+    db.saveTaxonomy('bjak', [
+      { slug: 'bjak', name: 'BJAK', description: 'superapp', evidence: 'BJAK is', qualifiers: ['AI Neobank'] },
+      { slug: 'kira', name: 'KIRA', description: 'app brand', evidence: 'KIRA is', qualifiers: ['AI Neobank App'] },
+    ]);
+    const units = db.taxonomyFor('bjak');
+    assert.equal(units.length, 2);
+    assert.deepEqual(units.map((u) => u.slug), ['bjak', 'kira']);
+    assert.deepEqual(JSON.parse(units[1]!.qualifiers), ['AI Neobank App']);
+  });
+
+  /**
+   * Re-deriving because one unseen qualifier turned up must not rename a unit
+   * that roles already point at. A full re-derivation is a deliberate act, not
+   * a side effect of a new posting appearing.
+   */
+  test('re-saving is additive: names hold, qualifiers accumulate', () => {
+    db.saveTaxonomy('bjak', [
+      { slug: 'kira', name: 'KIRA RENAMED', evidence: 'x', qualifiers: ['AI Finance App'] },
+    ]);
+    const kira = db.taxonomyFor('bjak').find((u) => u.slug === 'kira')!;
+    assert.equal(kira.name, 'KIRA', 'the existing name must survive');
+    assert.deepEqual(JSON.parse(kira.qualifiers).sort(), ['AI Finance App', 'AI Neobank App']);
+  });
+
+  test('the same qualifier twice does not duplicate', () => {
+    db.saveTaxonomy('bjak', [{ slug: 'kira', name: 'KIRA', evidence: 'x', qualifiers: ['AI Neobank App'] }]);
+    const kira = db.taxonomyFor('bjak').find((u) => u.slug === 'kira')!;
+    assert.equal(JSON.parse(kira.qualifiers).length, 2);
+  });
+
+  test('companies do not see each other', () => {
+    db.saveTaxonomy('skydreams', [{ slug: 'homedeal', name: 'Homedeal', evidence: 'x', qualifiers: ['Homedeal'] }]);
+    assert.equal(db.taxonomyFor('bjak').length, 2);
+    assert.equal(db.taxonomyFor('skydreams').length, 1);
+    assert.equal(db.taxonomyFor('nobody').length, 0);
+  });
+
+  test('a taxonomy correction is retrievable like any other decision', () => {
+    const id = db.recordDecision({
+      kind: 'taxonomy', subject: 'bjak', context: {}, chose: {}, decider: 'anthropic:x',
+    });
+    db.recordCorrection(id, {}, 'BJAK and KIRA are different brands');
+    const got = db.correctionsFor('taxonomy', 'bjak');
+    assert.equal(got.length, 1);
+    assert.match(got[0]!.correction_note!, /different brands/);
+    // and it does not leak into group corrections
+    assert.ok(db.correctionsFor('group', 'bjak::').every((d) => d.kind === 'group'));
+  });
+});
+
 test('cleanup', () => { rmSync(dir, { recursive: true, force: true }); });

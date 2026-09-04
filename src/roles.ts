@@ -4,6 +4,7 @@
  *   npm run roles              show every role and the listings under it
  *   npm run roles -- --backfill  group postings that predate grouping
  *   npm run roles -- --judge     DRY RUN: what a model would group differently
+ *   npm run roles -- --taxonomy  DRY RUN: what brands each company runs
  *
  * This exists because a group is a HYPOTHESIS. "AI Finance App" and "AI Neobank
  * App" at one company might be one job advertised twice or two teams with two
@@ -13,6 +14,7 @@
 import { q, upsertRole, setRoleId, setState, postingsInRole, type Role } from './store/db.js';
 import { roleKey, roleCore, qualifierOf } from './roles/key.js';
 import { judgeCandidate, type CandidatePosting } from './roles/judge.js';
+import { deriveTaxonomy, unitFor, type TaxonomyPosting } from './roles/taxonomy.js';
 import { loadConfig } from './config-file.js';
 
 const args = process.argv.slice(2);
@@ -177,6 +179,65 @@ async function dryRun(): Promise<void> {
   console.log('  Nothing was written. Compare against `npm run roles` before wiring this in.\n');
 }
 
+/**
+ * Dry run for the taxonomy pass. Writes nothing.
+ *
+ * The gate v2.1 is waiting on. Its central assumption is that ONE description
+ * excerpt per distinct qualifier is enough to see a company's brands. If it is
+ * not, this is where that shows — and it is far cheaper than finding out after
+ * role ids have been rebuilt around it.
+ */
+async function taxonomyDryRun(): Promise<void> {
+  const config = loadConfig();
+  const companies = q<{ company: string }>(
+    `SELECT DISTINCT company FROM jobs WHERE state != 'rejected' ORDER BY company`,
+  );
+  if (!companies.length) {
+    console.log('\n  Nothing live to derive a taxonomy from.\n');
+    return;
+  }
+
+  console.log(`\n  DRY RUN — nothing is written.\n  judge: ${config.ai.tasks?.judge ?? config.ai.provider}\n`);
+
+  for (const { company } of companies) {
+    const rows = q<{ title: string; raw: string }>(
+      `SELECT title, raw FROM jobs WHERE company = ? AND state != 'rejected'`, company,
+    );
+    const postings: TaxonomyPosting[] = rows.map((r) => ({
+      title: r.title,
+      qualifier: qualifierOf(r.title),
+      description: (JSON.parse(r.raw) as { description?: string }).description ?? '',
+    }));
+
+    process.stdout.write(`  ${company} — ${postings.length} listing(s) ... `);
+    let tax;
+    try {
+      tax = await deriveTaxonomy(company, postings, config.ai);
+    } catch (err) {
+      console.log(`FAILED: ${(err as Error).message.slice(0, 90)}`);
+      continue;
+    }
+
+    console.log(`${tax.units.length} unit(s)${tax.attempts > 1 ? `, asked ${tax.attempts}x` : ''}`);
+    for (const u of tax.units) {
+      const quals = Object.entries(tax.assignment)
+        .filter(([, name]) => name.toLowerCase() === u.name.toLowerCase())
+        .map(([qual]) => qual);
+      console.log(`      ${u.name}  —  ${u.description}`);
+      console.log(`        evidence: "${u.evidence.slice(0, 110)}"`);
+      console.log(`        ${quals.join(', ') || '(nothing assigned)'}`);
+    }
+
+    // What the role ids would become. This is the part worth reading.
+    const roleIds = new Set(
+      rows.map((r) => `${company.toLowerCase()}::${unitFor(tax, qualifierOf(r.title))}::${roleCore(r.title).toLowerCase()}`),
+    );
+    console.log(`      -> ${roleIds.size} role(s) under this taxonomy\n`);
+  }
+  console.log('  Nothing was written. Compare against `npm run roles`.\n');
+}
+
 if (args.includes('--backfill')) backfill();
 else if (args.includes('--judge')) await dryRun();
+else if (args.includes('--taxonomy')) await taxonomyDryRun();
 else list();

@@ -1075,3 +1075,135 @@ Tests: 150 -> 154. npm run typecheck clean.
 Spend: about two dollars of tokens across both dry runs. It bought the
 discovery that Bjak is two brands, and the evidence that the unit of judgement
 is wrong. Both were invisible before.
+2026-09-04  v2.1 plan: establish a company's brands once, group within them
+
+v2.0 asked "are these one job?" once per candidate group — seven groups, seven
+independent judgements, and four of them contained both of Bjak's brands. Two
+split on the brand boundary and two did not.
+
+The fix is not a better prompt. WHICH BRANDS A COMPANY RUNS IS A FACT ABOUT THE
+COMPANY, so it gets derived once and grouping becomes deterministic again:
+
+  pass 1  taxonomy   one model call per company, cached, correctable
+  pass 2  grouping   no model call.  role = company :: unit :: roleCore
+
+Three things fall out. The taxonomy cannot disagree with itself, so the two
+inconsistent groups vanish by construction rather than by persuasion. Six model
+calls become one. And a correction — "BJAK and KIRA are different brands" —
+fixes every role at Bjak instead of one group, which is the whole point of
+recording corrections.
+
+The honest trade, stated in §2.2 rather than buried: grouping stops being a
+judgement and becomes a consequence of one, so a wrong taxonomy is wrong
+everywhere at that company. One correctable failure instead of six independent
+ones. Better, but a trade.
+
+Sampling is by DISTINCT QUALIFIER, not by posting. Bjak has 38 live listings
+and about 8 distinct qualifiers; one description excerpt per qualifier is the
+same evidence at a fifth of the tokens, and it still works at a company with
+300 postings where showing all of them would not.
+
+Stress-tested across 10 dimensions: 44 findings, 32 actionable. The ones worth
+naming:
+
+  7.b  contacts.role_id was added in scope A and points at old-shaped role ids.
+       Changing the id shape detaches a contact from its role silently, and a
+       contact is a paid artefact. The re-backfill has to remap it.
+
+  1.d  A unit name containing "::" corrupts the role id — and so would a company
+       name, which v1.0 never guarded either. Slugify into the id, keep the
+       display name separately.
+
+  2.b  I wrote "most companies run one brand". The observed rate is two of two
+       running several. Corrected to say the single-unit path is the INERT
+       case, which is the property that actually matters.
+
+  6.a  architecture.md still says "screening stays model-free" and this puts a
+       model earlier in the pipeline than v2.0 did, not later. The doc edit is
+       overdue and now ships with the change rather than after it.
+
+  10.e I have redesigned grouping twice in one day. Recorded as a risk. The
+       inconsistency is measured rather than feared, which is the defence, but
+       10.c and 2.b both say the same thing: re-examine the whole axis once the
+       funnel has more than two companies in it.
+
+Deliberately not built: the residual judgement for two listings in the same
+unit with the same role core that are genuinely different jobs. It has not
+happened once in the observed data — every mixed group divided on brand, never
+on function — and building the escape hatch before seeing the failure is the
+mistake that scope A avoided by shipping without --split, which is how the
+Skydreams merge got found rather than guessed at.
+
+Files
+  docs/role-grouping-plan-v2.1.md  (new) plan + 10-dimension stress test
+
+No code. Tests 154, unchanged.
+
+
+2026-09-04  v2.1 steps 1-3: one question per company, and the answer holds
+
+The taxonomy pass, dry run, writing nothing. Two model calls, one per company.
+
+  Bjak — 48 listings ... 2 units
+    BJAK  evidence: "ABOUT BJAK The original mission of BJAK is we believe
+          people deserve smarter ways to plan, save and grow their..."
+          AI Investing, AI Finance, AI Stockbroking, AI Neobank, (no qualifier)
+    KIRA  evidence: "About KIRA Our mission is to make money smart, reliable
+          and within reach for everyone..."
+          AI Neobank App, AI Stockbroking App, AI Finance App, AI Investing App
+
+Every plain qualifier to BJAK, every App qualifier to KIRA, no exceptions, and
+the evidence is the literal boilerplate paragraph quoted back. That is exactly
+what §3.1 assumed one 800-character excerpt would expose. Skydreams came back
+Homedeal and Moving24 with the same kind of quoted evidence.
+
+THE CONSISTENCY IS THE POINT. Bjak's six role cores:
+
+    product engineer            BJAK          -> 1
+    product lead                BJAK + KIRA   -> 2
+    product manager             BJAK + KIRA   -> 2
+    product owner, technical    BJAK          -> 1
+    technical product lead      BJAK + KIRA   -> 2
+    technical product manager   BJAK + KIRA   -> 2
+                                                 10
+
+Two cores carry only plain qualifiers, matching the 0-App counts measured
+yesterday. The four containing both brands now all divide on the same boundary.
+The v2.0 inconsistency is gone by construction rather than by persuasion —
+there is no second derivation available to disagree with the first.
+
+Three designs on the same data:
+
+                      roles  Skydreams        Bjak mixed groups   calls
+  v1.0 string key       7    merged, wrongly  all wrong             0
+  v2.0 per-group judge 11    split correctly  2 of 4 wrong          7
+  v2.1 taxonomy        12    split correctly  4 of 4 consistent     2
+
+Fewer calls than v2.0 and a better answer, and the saving is structural rather
+than lucky: one company-level question replaces one per candidate group, and
+the ratio widens as a company posts more roles.
+
+Two smaller notes from building it.
+
+  saveTaxonomy is ADDITIVE ONLY, per finding 1.e. Re-deriving because one
+  unseen qualifier turned up must not rename a unit that roles already point
+  at. A test asserts the name survives a re-save that tries to change it.
+
+  An unassigned qualifier gets its OWN unit rather than joining the parent.
+  Same asymmetry as everywhere else in this design: over-splitting shows up as
+  a duplicate queue entry you can see, merging two brands hides a job you never
+  learn about.
+
+Files
+  src/store/db.ts               company_units table; roles.unit; taxonomyFor,
+                                saveTaxonomy; 'taxonomy' decision kind
+  src/store/decisions.test.ts   +5 tests
+  src/roles/taxonomy.ts         (new) sampling, slugify, validation, retry,
+                                single-unit fallback, prompt
+  src/roles/taxonomy.test.ts    (new, 23 tests)
+  src/roles.ts                  npm run roles -- --taxonomy, dry run
+  docs/role-grouping-plan-v2.1.md  §10 results
+
+Tests: 154 -> 178. npm run typecheck clean.
+Spend: two calls, roughly thirty cents. v2.0 spent about two dollars across two
+dry runs to reach a worse answer.

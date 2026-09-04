@@ -125,6 +125,29 @@ db.exec(`
     correction_note TEXT
   );
   CREATE INDEX IF NOT EXISTS decisions_subject ON decisions(kind, subject);
+  /**
+   * What brands or business units a company runs.
+   *
+   * Derived ONCE per company, because which brands a company runs is a fact
+   * about the company. Asking it per candidate group derived Bjak's taxonomy
+   * six independent times from six overlapping slices of evidence, and it
+   * landed differently: four groups contained both brands, two split on the
+   * boundary and two did not.
+   *
+   * slug goes into the role id, name is what a human reads. They are separate
+   * because a brand called "Foo :: Bar" would otherwise corrupt the id, and
+   * the same is true of a company name.
+   */
+  CREATE TABLE IF NOT EXISTS company_units (
+    company     TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT,
+    evidence    TEXT,
+    qualifiers  TEXT NOT NULL,
+    decided_at  TEXT NOT NULL,
+    PRIMARY KEY (company, slug)
+  );
   CREATE INDEX IF NOT EXISTS actor_calls_actor ON actor_calls(actor, at);
   CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
   CREATE INDEX IF NOT EXISTS jobs_seen  ON jobs(first_seen);
@@ -139,6 +162,7 @@ db.exec(`
 // and the column must exist before an index can be built on it. Getting this
 // wrong fails on exactly one of the two cases and passes on the other.
 addColumn('jobs', 'role_id', 'TEXT');
+addColumn('roles', 'unit', 'TEXT');
 addColumn('contacts', 'role_id', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS jobs_role ON jobs(role_id)');
 
@@ -293,7 +317,7 @@ export const roleOf = (jobId: string): Role | null =>
     `SELECT r.* FROM roles r JOIN jobs j ON j.role_id = r.id WHERE j.id = ?`, jobId,
   )[0] ?? null;
 
-export type DecisionKind = 'group' | 'contact' | 'screen' | 'draft';
+export type DecisionKind = 'group' | 'contact' | 'screen' | 'draft' | 'taxonomy';
 
 export interface Decision {
   id: string;
@@ -363,6 +387,50 @@ export const decisionsFor = (kind: DecisionKind, subject: string): Decision[] =>
   q<Decision>(
     'SELECT * FROM decisions WHERE kind = ? AND subject = ? ORDER BY at DESC', kind, subject,
   );
+
+export interface StoredUnit {
+  company: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  evidence: string | null;
+  /** Qualifiers assigned to this unit, as stored JSON. */
+  qualifiers: string;
+  decided_at: string;
+}
+
+export const taxonomyFor = (company: string): StoredUnit[] =>
+  q<StoredUnit>('SELECT * FROM company_units WHERE company = ? ORDER BY slug', company);
+
+/**
+ * Write a taxonomy.
+ *
+ * ADDITIVE ONLY. A unit already recorded keeps its name and gains any new
+ * qualifiers; nothing is renamed or removed. Re-deriving because one unseen
+ * qualifier turned up must not silently rename units that roles already point
+ * at — a full re-derivation is a deliberate act, not a side effect.
+ */
+export function saveTaxonomy(company: string, units: Array<{
+  slug: string; name: string; description?: string; evidence?: string; qualifiers: string[];
+}>): void {
+  const existing = new Map(taxonomyFor(company).map((u) => [u.slug, u]));
+  const now = new Date().toISOString();
+  const write = db.prepare(
+    `INSERT INTO company_units (company, slug, name, description, evidence, qualifiers, decided_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(company, slug) DO UPDATE SET qualifiers = excluded.qualifiers`,
+  );
+  db.transaction(() => {
+    for (const u of units) {
+      const prev = existing.get(u.slug);
+      const merged = prev
+        ? [...new Set([...(JSON.parse(prev.qualifiers) as string[]), ...u.qualifiers])]
+        : u.qualifiers;
+      write.run(company, u.slug, prev?.name ?? u.name, prev?.description ?? u.description ?? null,
+                prev?.evidence ?? u.evidence ?? null, JSON.stringify(merged), prev?.decided_at ?? now);
+    }
+  })();
+}
 
 export function spentLast24h(): number {
   const since = new Date(Date.now() - 86_400_000).toISOString();
