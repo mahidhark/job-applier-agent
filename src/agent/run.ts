@@ -21,13 +21,19 @@ import { q, recordContact } from '../store/db.js';
 import type { ProviderName } from '../ai/index.js';
 import type { JobPosting } from '../sources/types.js';
 import { buildEnrichAgent, enrichGoal } from './enrich-agent.js';
-import { checkGrounding, type Verdict } from './grounding.js';
+import { TOOL_COST_USD, type EnrichResult } from './tools/index.js';
+import { type Verdict } from './grounding.js';
+import { spentLast24h } from '../store/db.js';
 import { closeMcp } from './mcp.js';
 
 const args = process.argv.slice(2);
 
 /** Flags that consume the next argument. Anything else bare is the job id. */
-const VALUE_FLAGS = new Set(['--provider', '--tools', '--max-steps']);
+// `--compare` is deliberately boolean. Making it value-taking meant
+// `--compare <job-id>` swallowed the job id — the same class of bug that made
+// `--tools narrow <job-id>` parse "narrow" as the id. Custom provider sets go
+// through --providers instead.
+const VALUE_FLAGS = new Set(['--provider', '--tools', '--max-steps', '--providers']);
 
 const has = (f: string) => args.includes(f);
 const val = (f: string) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : undefined; };
@@ -52,7 +58,7 @@ const jobId = positional[0];
 // actor call can need a follow-up to page its dataset. Ten was too few: the
 // first Claude run was one step from an answer when it ran out.
 const MAX_STEPS = Number(val('--max-steps') ?? 20);
-const TOOL_PROFILE = val('--tools');
+
 
 export interface RunRecord {
   provider: string;
@@ -97,36 +103,39 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
   const started = Date.now();
   const toolCalls: RunRecord['toolCalls'] = [];
   const unknownTools: string[] = [];
-  let transcript = '';
+  const transcript = { text: '' };
   let rawFirstStep: unknown;
+  let committed: EnrichResult | null = null;
+
+  // Budget is enforced by refusing the call, not by billing and apologising.
+  const dailyLeft = config.enrich.maxSpendPerDayUsd - spentLast24h();
+  let spent = 0;
+  const charge = (tool: string): boolean => {
+    const cost = TOOL_COST_USD[tool] ?? 0;
+    if (spent + cost > Math.min(0.5, dailyLeft)) return false;
+    spent += cost;
+    return true;
+  };
 
   try {
-    const { agent, label, toolNames } = await buildEnrichAgent({
-      config: config.ai, provider,
-      ...(TOOL_PROFILE ? { toolProfile: TOOL_PROFILE } : {}),
+    const { agent, label, toolNames, providerOptions } = buildEnrichAgent({
+      config: config.ai,
+      provider,
+      toolContext: { jobId: job.id, transcript, charge, onFinish: (r) => { committed = r; } },
     });
     const known = new Set(toolNames);
 
     const res = await agent.generate(enrichGoal(job), {
       maxSteps: MAX_STEPS,
+      ...(Object.keys(providerOptions).length ? { providerOptions } : {}),
       onStepFinish: (step: unknown) => {
         if (rawFirstStep === undefined) rawFirstStep = step;
+        const s = step as { toolCalls?: Array<Record<string, unknown>> };
 
-        const s = step as {
-          toolCalls?: Array<Record<string, unknown>>;
-          toolResults?: Array<Record<string, unknown>>;
-          content?: Array<Record<string, unknown>>;
-        };
-
-        // Mastra wraps each call as { type, runId, from, payload: { toolName, args } }
-        // while the same call ALSO appears flat inside `content`. Reading both
-        // counted every call twice — the first clean run reported 16 calls for
-        // 8 actual ones. `toolCalls` is the authoritative list; `content` is a
-        // rendering of the same events.
         const nameOf = (c: Record<string, unknown>): string | null => {
           const payload = c['payload'] as Record<string, unknown> | undefined;
-          const name = payload?.['toolName'] ?? c['toolName'] ?? c['name'];
-          return typeof name === 'string' ? name : null;
+          const n = payload?.['toolName'] ?? c['toolName'] ?? c['name'];
+          return typeof n === 'string' ? n : null;
         };
         const argsOf = (c: Record<string, unknown>): unknown => {
           const payload = c['payload'] as Record<string, unknown> | undefined;
@@ -135,9 +144,6 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
 
         for (const c of s.toolCalls ?? []) {
           const name = nameOf(c);
-          // Only a name we could actually read and that is absent from the
-          // server's list counts as hallucinated. An unreadable shape is our
-          // bug, and reporting it as the model's would be a false finding.
           if (name && !known.has(name)) unknownTools.push(name);
           toolCalls.push({
             name: name ?? '(shape unread)',
@@ -145,39 +151,24 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
             argsPreview: JSON.stringify(argsOf(c)).slice(0, 160),
           });
         }
-
-        // The result lives at payload.result. Reading r.result yielded undefined
-        // on every call, so the transcript was empty and the grounding check
-        // reported every observation as ungrounded — a false accusation against
-        // the model, which is the worst way for a verifier to fail.
-        for (const r of s.toolResults ?? []) {
-          const payload = r['payload'] as Record<string, unknown> | undefined;
-          const v = payload?.['result'] ?? r['result'] ?? r['output'];
-          if (v === undefined) continue;
-          transcript += `\n${typeof v === 'string' ? v : JSON.stringify(v)}`;
-        }
       },
     } as never);
 
     const finalText = String((res as { text?: string }).text ?? '');
-    const parsed = parseFinal(finalText);
 
-    // Same rule as everywhere else in this system: an observation is only
-    // real if its cited text appears in something a tool actually returned.
-    let grounded: Verdict | null = null;
-    let groundingReason: string | undefined;
-    if (parsed) {
-      const g = checkGrounding(parsed['OBSERVATION'] ?? '', parsed['SOURCE'] ?? '', transcript);
-      grounded = g.verdict;
-      groundingReason = g.reason;
-      if (parsed['CONTACT']) {
-        recordContact(job.id, parsed['CONTACT'], parsed['TITLE'] ?? null,
-                      parsed['PROFILE'] ?? null, `agent:${label}`,
-                      g.verdict === 'grounded' ? (parsed['OBSERVATION'] ?? null) : null);
-      }
-    }
+    // record_contact already refused an ungrounded observation, so a committed
+    // result is grounded by construction. That is the point of enforcing it in
+    // the tool rather than scoring afterwards.
+    const done = committed as EnrichResult | null;
+    const parsed = done
+      ? { CONTACT: done.name, TITLE: done.title, PROFILE: done.profileUrl,
+          OBSERVATION: done.observation || 'NONE', SOURCE: done.observationSource || 'NONE',
+          WHY: done.reasoning }
+      : null;
+    const grounded: Verdict | null = done
+      ? (done.observation ? 'grounded' : 'no_claim')
+      : null;
 
-    // Running out of steps is a budget outcome, not an inability to answer.
     const stopReason: RunRecord['stopReason'] = parsed
       ? 'answered'
       : toolCalls.length >= MAX_STEPS ? 'max_steps' : 'no_block';
@@ -185,15 +176,15 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
     return {
       provider: label, jobId: job.id, ok: Boolean(parsed), wallMs: Date.now() - started,
       steps: toolCalls.length, toolCalls, unknownTools, stopReason, finalText,
-      rawFirstStep, transcriptChars: transcript.length,
-      transcriptSample: transcript.slice(0, 20000), parsed, grounded,
-      ...(groundingReason ? { groundingReason } : {}),
+      rawFirstStep, transcriptChars: transcript.text.length,
+      transcriptSample: transcript.text.slice(0, 20000), parsed, grounded,
+      ...(committed ? {} : { groundingReason: 'the agent never called record_contact' }),
     };
   } catch (err) {
     return {
       provider, jobId: job.id, ok: false, wallMs: Date.now() - started,
       steps: toolCalls.length, toolCalls, unknownTools, stopReason: 'error',
-      finalText: '', rawFirstStep, transcriptChars: transcript.length, parsed: null,
+      finalText: '', rawFirstStep, transcriptChars: transcript.text.length, parsed: null,
       grounded: null, error: (err as Error).message,
     };
   }
@@ -228,7 +219,14 @@ function report(r: RunRecord): void {
 
 async function main() {
   if (!jobId) {
-    console.error('\n  usage: npm run agent -- [--provider ollama|anthropic | --compare] <job-id>\n');
+    console.error(
+      '\n  usage: npm run agent -- <job-id>\n' +
+      '    --provider anthropic|cerebras|ollama   one provider\n' +
+      '    --compare                              anthropic + cerebras\n' +
+      '    --providers a,b,c                      an explicit set\n' +
+      '    --tools narrow|discovery               tool surface\n' +
+      '    --max-steps N                          default 20\n',
+    );
     process.exit(1);
   }
   const row = q<{ raw: string }>('SELECT raw FROM jobs WHERE id = ?', jobId)[0];
@@ -236,9 +234,11 @@ async function main() {
   const job = JSON.parse(row.raw) as JobPosting;
 
   console.log(`\n  ${job.company} — ${job.title}`);
-  const providers: ProviderName[] = has('--compare')
-    ? ['anthropic', 'ollama']
-    : [(val('--provider') as ProviderName) ?? 'ollama'];
+  const providers: ProviderName[] = val('--providers')
+    ? (val('--providers')!.split(',').map((p) => p.trim()) as ProviderName[])
+    : has('--compare')
+      ? ['anthropic', 'cerebras']
+      : [(val('--provider') as ProviderName) ?? 'cerebras'];
 
   const records: RunRecord[] = [];
   for (const p of providers) {

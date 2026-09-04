@@ -11,8 +11,9 @@
 import type { Model } from './types.js';
 import { anthropicModel } from './anthropic.js';
 import { ollamaModel } from './ollama.js';
+import { cerebrasModel } from './cerebras.js';
 
-export type ProviderName = 'anthropic' | 'ollama';
+export type ProviderName = 'anthropic' | 'ollama' | 'cerebras';
 export type TaskName = 'extract' | 'compose' | 'tools' | 'judge';
 
 export interface AiConfig {
@@ -21,7 +22,13 @@ export interface AiConfig {
   /** Per-task override: { compose: "anthropic", extract: "ollama" }. */
   tasks?: Partial<Record<TaskName, ProviderName>>;
   anthropic: { model: string; effort?: 'low' | 'medium' | 'high' };
-  ollama: { baseUrl: string; model: string; timeoutMs: number };
+  /**
+   * Token-priced LPU inference. No fixed cost and no hardware, which for a
+   * batch workload beats running the same size model on owned metal once the
+   * RAM it needs is priced in.
+   */
+  cerebras: { model: string };
+  ollama: { baseUrl: string; model: string; timeoutMs: number; numCtx?: number };
 }
 
 export function buildModel(config: AiConfig, provider?: ProviderName): Model {
@@ -29,6 +36,8 @@ export function buildModel(config: AiConfig, provider?: ProviderName): Model {
   switch (name) {
     case 'anthropic':
       return anthropicModel(config.anthropic);
+    case 'cerebras':
+      return cerebrasModel({ model: config.cerebras.model });
     case 'ollama':
       return ollamaModel(config.ollama);
     default:

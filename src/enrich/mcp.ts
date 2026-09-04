@@ -41,19 +41,67 @@ export async function closeMcp(): Promise<void> {
   client = null;
 }
 
-/** Text content from an MCP tool result, which arrives as content blocks. */
-function textOf(result: unknown): string {
+/** Every text block from an MCP tool result, kept separate. */
+function textBlocks(result: unknown): string[] {
   const blocks = (result as { content?: Array<{ type?: string; text?: string }> })?.content ?? [];
-  return blocks.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('\n').trim();
+  return blocks.filter((b) => b.type === 'text').map((b) => (b.text ?? '').trim()).filter(Boolean);
+}
+
+/** All blocks joined, for error messages only. */
+const textOf = (result: unknown): string => textBlocks(result).join('\n');
+
+/**
+ * Pull an item array out of one text block.
+ *
+ * Servers wrap results inconsistently — a bare array, `{items:[...]}`, or that
+ * JSON nested in a `text` field. Returns null rather than a guess, so callers
+ * raise instead of proceeding on a false emptiness.
+ */
+function parseItems(raw: string): unknown[] | null {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (Array.isArray(v)) return v;
+    const o = v as { items?: unknown; text?: unknown };
+    if (Array.isArray(o.items)) return o.items;
+    if (typeof o.text === 'string') return parseItems(o.text);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Dataset id, wherever the response happens to put it. */
+function findDatasetId(raw: string): string | null {
+  try {
+    const o = JSON.parse(raw) as {
+      datasetId?: string;
+      storages?: { datasets?: { default?: { id?: string } } };
+    };
+    return o.datasetId ?? o.storages?.datasets?.default?.id ?? null;
+  } catch {
+    return /datasetId["':\s]+([A-Za-z0-9_-]+)/.exec(raw)?.[1] ?? null;
+  }
 }
 
 /**
  * Run one Apify actor and return its dataset rows.
  *
  * Deliberately not exposed to the agent as a tool. Letting a model choose an
- * arbitrary actor means letting it choose an arbitrary bill, and the tool
- * schema for `call-actor` is large enough to confuse a small model on its own.
- * The narrow wrappers in tools.ts are what the agent sees.
+ * arbitrary actor means letting it choose an arbitrary bill, and the
+ * `call-actor` schema is large enough to confuse a small model on its own.
+ *
+ * Three response shapes have been observed in practice, which is why this
+ * reads defensively rather than assuming one:
+ *
+ *   - items inline in a block, alongside a datasetId
+ *   - run metadata only, with the dataset at storages.datasets.default.id
+ *   - both, as SEPARATE content blocks
+ *
+ * The last one broke an earlier version: it joined every block with a newline
+ * and then tried to JSON.parse the concatenation, which of course failed, and
+ * the fallback returned a single {text} row. `resolve_company` then reported
+ * "no company matched" six times in a row while the answer sat in a block it
+ * had already been handed.
  */
 export async function runActorViaMcp(
   actor: string,
@@ -61,27 +109,35 @@ export async function runActorViaMcp(
   maxItems = 25,
 ): Promise<unknown[]> {
   const c = await apifyMcp();
-
   const run = await c.callTool({
     name: 'call-actor',
     arguments: { actor, input, waitSecs: 45 },
   });
 
-  const match = /datasetId[=:"\s]+([A-Za-z0-9_-]+)/.exec(textOf(run));
-  if (!match?.[1]) throw new Error(`no datasetId in actor result for ${actor}`);
+  const blocks = textBlocks(run);
 
-  const items = await c.callTool({
-    name: 'get-dataset-items',
-    arguments: { datasetId: match[1], limit: maxItems, clean: true },
-  });
-
-  const text = textOf(items);
-  try {
-    const parsed = JSON.parse(text) as { items?: unknown[] };
-    return parsed.items ?? (Array.isArray(parsed) ? parsed : []);
-  } catch {
-    // Some MCP servers pre-render results as prose. Hand it back as one row so
-    // the agent still sees something rather than an empty list.
-    return text ? [{ text }] : [];
+  for (const b of blocks) {
+    const items = parseItems(b);
+    if (items?.length) return items.slice(0, maxItems);
   }
+
+  for (const b of blocks) {
+    const id = findDatasetId(b);
+    if (!id) continue;
+    const got = await c.callTool({
+      name: 'get-dataset-items',
+      arguments: { datasetId: id, limit: maxItems, clean: true },
+    });
+    for (const gb of textBlocks(got)) {
+      const items = parseItems(gb);
+      if (items) return items.slice(0, maxItems);
+    }
+  }
+
+  // An empty result is a real answer; an unreadable one is not. Raising here
+  // means the agent is told the tool failed rather than told there is nothing.
+  throw new Error(
+    `${actor}: could not read items from ${blocks.length} response block(s): ` +
+    `${textOf(run).slice(0, 200)}`,
+  );
 }

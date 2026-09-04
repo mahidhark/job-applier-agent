@@ -15,8 +15,8 @@
  */
 import { Agent } from '@mastra/core/agent';
 import type { AiConfig, ProviderName } from '../ai/index.js';
-import { agentModel, modelLabel } from './model.js';
-import { mcpTools } from './mcp.js';
+import { agentModel, agentProviderOptions, modelLabel } from './model.js';
+import { buildEnrichTools, type EnrichToolContext } from './tools/index.js';
 
 export const GOAL_SYSTEM = `You find the right person to approach about a job opening, and one true thing to say to them.
 
@@ -24,9 +24,9 @@ Someone is applying for this role. What you decide determines who they message, 
 
 YOUR TOOLS
 
-Use the tools you have been given. Read a tool's input schema before calling it rather than guessing at field names, and call a tool by its exact name.
+resolve_company turns a company name into a LinkedIn URL. find_people_at_company lists people there, optionally filtered by title. read_recent_posts shows what someone has written lately. record_contact commits your answer and ends the run.
 
-If you have been given tools for searching a marketplace of scrapers rather than named data tools, then finding the right scraper is part of the job: search, read what it takes as input, then run it.
+Each returns its results directly. There is no separate step to fetch them.
 
 WHAT DONE LOOKS LIKE
 
@@ -58,12 +58,12 @@ WHY: <why this person and not the others>`;
 export interface EnrichAgentOptions {
   config: AiConfig;
   provider?: ProviderName;
-  /** Forces a tool profile, so one goal can be repeated across tool surfaces. */
-  toolProfile?: string;
+  /** Per-run state the tools need: transcript, spend guard, completion callback. */
+  toolContext: EnrichToolContext;
 }
 
-export async function buildEnrichAgent({ config, provider, toolProfile }: EnrichAgentOptions) {
-  const tools = await mcpTools(toolProfile);
+export function buildEnrichAgent({ config, provider, toolContext }: EnrichAgentOptions) {
+  const tools = buildEnrichTools(toolContext);
 
   const agent = new Agent({
     id: 'enrich',
@@ -73,7 +73,12 @@ export async function buildEnrichAgent({ config, provider, toolProfile }: Enrich
     tools: tools as never,
   });
 
-  return { agent, label: modelLabel(config, provider), toolNames: Object.keys(tools) };
+  return {
+    agent,
+    label: modelLabel(config, provider),
+    toolNames: Object.keys(tools),
+    providerOptions: agentProviderOptions(config, provider),
+  };
 }
 
 /** The goal, stated as the task rather than as a procedure. */

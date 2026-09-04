@@ -149,6 +149,10 @@
       "model": "claude-opus-5",
       "effort": "medium"
     },
+    "cerebras": {
+      "$note": "Measured 2026-09-04: gemma-4-31b, qwen-3.8-27b and gpt-oss-120b all call tools correctly. gpt-oss-120b is the default because it is the only one that accepts reasoning_format=hidden, and suppressing reasoning_content is what keeps Mastra multi-turn tool replay working. llama3.1-8b from the Sprint 4 cost model no longer exists.",
+      "model": "gpt-oss-120b"
+    },
     "ollama": {
       "baseUrl": "http://127.0.0.1:11435",
       "model": "qwen3.5-4b-agent",

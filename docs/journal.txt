@@ -346,3 +346,75 @@ Files
   src/agent/run.ts                       grounding extracted, transcript sampled
 
 Tests: 33 -> 42. npm run typecheck clean.
+
+
+2026-09-04 (cont.) — refactor onto Mastra properly; the tool surface finding
+------------------------------------------------------------------------------
+Mahi asked whether we were reusing Mastra, Unsloth and SIA. Auditing that
+honestly: Mastra was ~30% used. I had formed a view early that its Agent
+runtime would normalise providers and corrupt the model comparison — defensible
+— and then let that colour the whole framework and hand-rolled its eval stack
+without checking. Mastra ships Datasets, Experiments, Scorers, Traces and
+Storage, which map onto the five harness layers almost exactly. createScorer's
+function-vs-prompt-object split IS the deterministic-vs-judged distinction I
+had written up as if it were a design insight.
+
+Worse: two of the day's six harness bugs came from parsing Mastra's internals
+(payload.toolName, payload.result). Consuming its output rather than reverse-
+engineering it would have prevented both. That argues for using more of it.
+
+Deleted: src/enrich/{agent,agent.test,tools,tools.test,enrich,run}.ts — the
+hand-rolled loop, its 7 tests, the ToolImpl wrappers and their 6. Tests 42 ->
+29, which is the point rather than a regression.
+
+Kept, because no framework gives you this: the four wrapped tools, now as
+Mastra createTool. Measured today, gpt-oss-120b on Apify's RAW MCP surface
+burned all 20 steps making 18 consecutive searches and never once read a
+result — the actor -> datasetId -> get-dataset-items pattern asks the model to
+manage an async job lifecycle. On the wrapped tools the same model, same job:
+
+    raw MCP      20 tool calls   224.6s   never read a result
+    wrapped       5 tool calls    59.5s   resolve, search, refine, refine
+
+Four times fewer calls, four times faster. A 120B failed on the raw surface, so
+a 4B has no chance; fixing the surface is a PREREQUISITE to any local model
+working, not a later optimisation.
+
+Grounding moved INTO record_contact. It calls checkGrounding and returns
+REFUSED when the citation is absent from the transcript, so a fabricated
+observation never commits and the model gets a chance to correct. A committed
+result is now grounded by construction, which is strictly better than the
+post-hoc scoring it replaces. The spend guard likewise refuses in-band rather
+than killing the run.
+
+Harness fault #7, found by this run: the runner labels "searched properly and
+honestly found nobody" as `no_block`, i.e. failure — while the prompt
+explicitly tells the model not to call record_contact when it finds nobody.
+Correct behaviour scored as failure, same class as maxSteps=10 being reported
+as "NO USABLE ANSWER" this morning. Needs an `answered_none` outcome, and the
+eval set needs that case deliberately: fabricating a contact where none exists
+is the worst failure this system has.
+
+UPSTREAM OUTAGE, and the comparison is confounded by it.
+harvestapi/linkedin-profile-search returns 0 rows for everyone —
+Booking.com included, which has tens of thousands of employees. It worked three
+hours ago. Both models were therefore graded against a tool that could not
+answer, and BOTH handled it correctly: Claude tried the brand entity Homedeal
+as a separate LinkedIn company (genuinely sharp) before reporting honestly;
+Cerebras reached the same conclusion in 5 calls to Claude's 9. Neither invented
+a person.
+
+Two consequences: a fallback actor is needed
+(harvestapi/linkedin-company-employees takes a companies array directly), and
+the Sprint 1 §2.3 liveness alarm must cover enrichment tools and not only job
+boards. A tool returning empty for EVERYTHING is an outage; without that alarm
+it reads as "the agent could not find anyone", which is exactly how this
+result would have been mis-written.
+
+Files
+  src/agent/tools/index.ts   (new) four wrapped tools as Mastra createTool
+  src/agent/enrich-agent.ts  wrapped tools instead of raw MCP
+  src/agent/run.ts           reads the committed result; budget refuses pre-call
+  src/enrich/               only mcp.ts survives
+
+Tests: 42 -> 29. npm run typecheck clean.

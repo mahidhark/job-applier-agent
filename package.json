@@ -12,7 +12,6 @@
     "poll": "tsx --env-file-if-exists=.env src/poll.ts",
     "poll:once": "tsx --env-file-if-exists=.env src/poll.ts --once",
     "queue": "tsx --env-file-if-exists=.env src/queue.ts",
-    "enrich": "tsx --env-file-if-exists=.env src/enrich/run.ts",
     "agent": "tsx --env-file-if-exists=.env src/agent/run.ts",
     "status": "tsx --env-file-if-exists=.env src/status.ts",
     "explain": "tsx --env-file-if-exists=.env src/explain.ts",
@@ -23,6 +22,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.49",
+    "@ai-sdk/cerebras": "^3.0.43",
     "@anthropic-ai/sdk": "^0.122.0",
     "@mastra/core": "^1.64.0",
     "@mastra/mcp": "^1.17.3",
