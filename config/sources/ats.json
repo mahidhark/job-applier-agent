@@ -1,0 +1,7 @@
+{
+  "$comment": "Companies whose job board we poll directly through the official public API. Free, stable, no scraping. Find the slug in the careers-page URL or its network tab.",
+  "boards": [
+    { "company": "Bjak",      "ats": "ashby",      "slug": "bjakcareer" },
+    { "company": "Skydreams", "ats": "greenhouse", "slug": "skydreams" }
+  ]
+}

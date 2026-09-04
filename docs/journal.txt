@@ -1,0 +1,54 @@
+job-applier-agent journal
+=========================
+
+Newest entry last. One entry per session: what changed, which files, test delta.
+
+
+2026-09-04 — repo created, discovery through scoring working on live data
+--------------------------------------------------------------------------
+Built from the shape of upwork-agent: poll -> screen -> score, one orchestrator,
+pure gates, SQLite for idempotence and for answering "why not" later.
+
+The strategy this serves, from the operator's own measured data: ~50 form
+applications produced 1-2 callbacks (~3%); 10 accepted cold LinkedIn messages
+produced 4-5 recruiter calls (~50%). Outreach converts 15-20x better than the
+form. So the form is a compliance step and the outreach is the application —
+and the send stays human, because automating it saves fifteen seconds, moves
+the 50% not at all, and risks the account that carries the whole channel.
+
+Sources verified live rather than from documentation:
+  ashby       api.ashbyhq.com/posting-api/job-board/bjakcareer   3084 postings
+  greenhouse  boards-api.greenhouse.io/v1/boards/skydreams/jobs     4 postings
+  lever       api.lever.co/v0/postings/gopuff                    765 postings
+
+Three bugs found by running it, not by reading it:
+
+  1. Dedupe ran BEFORE screening and kept the first occurrence. Bjak lists one
+     posting per market, so the Netherlands variant was dropped as a duplicate
+     and its Sydney twin was judged: 287 of 291 rejected on location. Moved
+     dedupe after screening. The gates are pure, so judging every variant is
+     free, and the survivor of a duplicate set is now a role we can take.
+
+  2. The location gate passed any short bare locality as "country unknown",
+     meant for Greenhouse writing "Utrecht" without a country. It also passed
+     "Kuala Lumpur", which is how 688 of 3088 postings cleared the gates on the
+     first run. Inverted: home localities are matched by name, and a location
+     the board states but we cannot recognise is a rejection.
+
+  3. maxAgeDays was 14, carried over from Upwork reflex. Both live Skydreams
+     roles the operator is actually pursuing are 59 and 86 days old and still
+     open — for a permanent role that means they have not found anyone, which
+     is information in his favour. Freshness moved to scoring; the gate is now
+     120 days and exists only to drop postings a board forgot to close.
+
+Final pass on live data: 3088 seen, 38 kept, 12 duplicate listings dropped.
+Both Skydreams Senior PM roles come through at 65.7 and 65.5.
+
+Not built yet: src/enrich/ (hiring-manager resolution when jobPoster is absent,
+recent posts for a specific observation) and src/draft/ (the 300-char
+connection note grounded in the evidence corpus). Interfaces defined.
+
+Files
+  the repository (new)
+
+Tests: 14. npm run typecheck clean.

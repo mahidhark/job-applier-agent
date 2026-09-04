@@ -1,0 +1,12 @@
+{
+  "$comment": "Apify-backed discovery for roles at companies not on a known ATS. Costs money per result, so keep `limit` tight and lean on the ATS boards above for companies you already care about.",
+  "enabled": true,
+  "discoveryActor": "valig/linkedin-jobs-scraper",
+  "enrichActor": "curious_coder/linkedin-jobs-scraper",
+  "searches": [
+    { "name": "pm-nl",        "keywords": "Product Manager",  "location": "Netherlands", "datePosted": "past24Hours", "limit": 60 },
+    { "name": "product-lead", "keywords": "Product Lead",     "location": "Netherlands", "datePosted": "past24Hours", "limit": 40 },
+    { "name": "head-product", "keywords": "Head of Product",  "location": "Netherlands", "datePosted": "pastWeek",    "limit": 40 },
+    { "name": "low-pool",     "keywords": "Product Manager",  "location": "Netherlands", "datePosted": "pastWeek",    "limit": 40, "under10Applicants": true }
+  ]
+}

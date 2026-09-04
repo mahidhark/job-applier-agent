@@ -1,0 +1,40 @@
+# --- Personal data. NEVER commit. ---
+# The evidence corpus, CVs, drafted notes and the queue all contain personal
+# and account material. They live outside this repo by design; these patterns
+# are a second line of defence in case anything is ever copied in.
+corpus/
+profile*.md
+cv*/
+resume*
+*.private.*
+private/
+queue/
+out/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+tokens.json
+.credentials/
+
+# Runtime
+data/
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Node
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

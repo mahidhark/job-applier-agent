@@ -1,0 +1,142 @@
+{
+  "pollIntervalMinutes": 480,
+  "screen": {
+    "operatorCountry": "Netherlands",
+    "homeLocalities": [
+      "amsterdam",
+      "utrecht",
+      "rotterdam",
+      "the hague",
+      "den haag",
+      "eindhoven",
+      "hilversum",
+      "haarlem",
+      "delft",
+      "groningen",
+      "amersfoort",
+      "hoofddorp",
+      "zaandam",
+      "almere",
+      "leiden",
+      "tilburg",
+      "breda",
+      "nijmegen",
+      "arnhem",
+      "maastricht",
+      "schiphol",
+      "randstad",
+      "'s-hertogenbosch",
+      "den bosch",
+      "zwolle",
+      "apeldoorn",
+      "enschede",
+      "leeuwarden",
+      "dordrecht"
+    ],
+    "acceptRemoteIn": [
+      "Netherlands",
+      "Europe",
+      "EMEA",
+      "Worldwide"
+    ],
+    "maxAgeDays": 120,
+    "minSalary": 70000,
+    "salaryCurrency": "EUR",
+    "titleMustMatch": [
+      "product manager",
+      "senior product manager",
+      "principal product manager",
+      "lead product manager",
+      "product lead",
+      "head of product",
+      "group product manager",
+      "product owner",
+      "product engineer",
+      "director of product",
+      "chief product officer",
+      "founding product",
+      "gtm engineer",
+      "growth product"
+    ],
+    "titleMustNotMatch": [
+      "intern",
+      "internship",
+      "working student",
+      "junior",
+      "graduate",
+      "designer",
+      "marketing manager",
+      "sales",
+      "recruiter",
+      "assistant"
+    ],
+    "skills": [
+      "marketplace",
+      "two-sided",
+      "b2b saas",
+      "saas",
+      "product led growth",
+      "plg",
+      "activation",
+      "retention",
+      "onboarding",
+      "funnel",
+      "monetisation",
+      "monetization",
+      "pricing",
+      "subscription",
+      "experimentation",
+      "a/b test",
+      "positioning",
+      "go-to-market",
+      "gtm",
+      "ai",
+      "llm",
+      "automation",
+      "api",
+      "platform",
+      "fintech",
+      "ecommerce",
+      "logistics",
+      "classifieds"
+    ],
+    "minSkillMatches": 1
+  },
+  "score": {
+    "weights": {
+      "titleFit": 0.3,
+      "skillOverlap": 0.25,
+      "companyStage": 0.15,
+      "freshness": 0.15,
+      "contactability": 0.15
+    },
+    "freshnessFloorDays": 60,
+    "companySizeSweetSpot": {
+      "min": 30,
+      "max": 600
+    }
+  },
+  "enrich": {
+    "targetFunctionIds": [
+      "19"
+    ],
+    "targetSeniorityIds": [
+      "220",
+      "300",
+      "310",
+      "320"
+    ],
+    "maxProfilesPerCompany": 3,
+    "recentPostsPerProfile": 5,
+    "onlyRecentlyActive": true,
+    "maxSpendPerDayUsd": 2.0
+  },
+  "draft": {
+    "connectionNoteMaxChars": 300,
+    "coverLetterMaxChars": 2000,
+    "model": "claude-opus-5"
+  },
+  "queue": {
+    "maxPerDay": 10
+  }
+}
