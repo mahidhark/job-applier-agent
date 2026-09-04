@@ -91,7 +91,7 @@ export interface EnrichResult {
 /** Declared cost per call, charged against the run budget before it happens. */
 export const TOOL_COST_USD: Record<string, number> = {
   resolve_company: 0.005,
-  find_people_at_company: 0.1,
+  find_people_at_company: 0.14,
   find_employees_at_company: 0.1,
   read_recent_posts: 0.02,
   record_contact: 0,
@@ -160,7 +160,15 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
     execute: async ({ companyLinkedinUrl, jobTitles }) => {
       if (!ctx.charge('find_people_at_company')) return refuse('find_people_at_company');
       const rows = (await runActorViaMcp(PROFILE_SEARCH, {
-        profileScraperMode: 'Short',
+        // Full for the same reason as the other source, confirmed on the same
+        // three people at Adyen once the plan cap lifted. Short returns an
+        // opaque member id in `linkedinUrl` (/in/ACwAAAWDOpsB...) and About
+        // text where a headline belongs; Full returns /in/modamman and "Head of
+        // Card Network & Product Partnerships at Adyen". Note this actor's own
+        // default is already 'Full' — we were overriding it with the broken one.
+        //
+        // $0.10 per search page + $0.004/profile = $0.14 at ten, up from $0.10.
+        profileScraperMode: 'Full',
         currentCompanies: [companyLinkedinUrl],
         ...(jobTitles?.length ? { currentJobTitles: jobTitles } : {}),
         maxItems: 10,
