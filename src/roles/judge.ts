@@ -48,7 +48,15 @@ export interface Judgement {
   partial: boolean;
   /** What the judge was told about past corrections, for the audit trail. */
   priorCorrections: number;
+  /** How many times it had to be asked. >1 means the first partition was malformed. */
+  attempts: number;
 }
+
+/** Named after the first dry run mis-partitioned an eight-listing group. */
+export const RETRY_HINT = (jobIds: string[]): string =>
+  `\n\nYour previous answer did not partition the listings correctly. Every one of ` +
+  `these jobIds must appear in exactly one group, none may be repeated, and none ` +
+  `invented:\n${jobIds.map((id) => `  ${id}`).join('\n')}`;
 
 /**
  * JSON Schema, not Zod, because that is what `Model.parse` takes — the
@@ -97,6 +105,7 @@ export function splitAll(postings: CandidatePosting[], decider: string, reason: 
     decider,
     partial: false,
     priorCorrections: 0,
+    attempts: 0,
     groups: postings.map((p) => ({
       jobIds: [p.jobId],
       roleTitle: p.title,
@@ -183,9 +192,17 @@ ${lines}
 Return a partition of every jobId above. For each group give a roleTitle, your
 reasoning, and whether you are confident those listings are genuinely one job.
 
-Set confident: false whenever you are unsure. Being unsure is a useful answer
-here — an unsure group gets split, and a wrong split is cheap and visible while
-a wrong merge silently hides a job from someone who would have applied to it.`;
+WHAT confident MEANS HERE. Not certainty. It means: would a reasonable person
+reading these descriptions call them one job? If your own reasoning concludes
+they are the same opening, say confident: true — do not hedge on a judgement
+you have already made. Reserve confident: false for groups you genuinely cannot
+call, such as descriptions too thin to tell apart.
+
+An unconfident group is SPLIT into separate roles. That is the cheap direction —
+a wrong split shows up as two queue entries you can see, while a wrong merge
+silently hides a job from someone who would have applied to it. But splitting a
+group you correctly identified as one job wastes a paid contact lookup for
+nothing, so do not hedge to be safe.`;
 }
 
 /** The correction notes worth showing, oldest last. */
@@ -201,9 +218,7 @@ export async function judgeCandidate(
   postings: CandidatePosting[],
   config: AiConfig,
 ): Promise<Judgement> {
-  if (postings.length < 2) {
-    return { ...splitAll(postings, 'key', 'only one listing'), priorCorrections: 0 };
-  }
+  if (postings.length < 2) return splitAll(postings, 'key', 'only one listing');
   if (!describedEnough(postings)) {
     return splitAll(postings, 'key',
       'too few descriptions to judge; split rather than guess at a merge');
@@ -213,13 +228,31 @@ export async function judgeCandidate(
   const shown = postings.slice(0, MAX_SHOWN);
   const model = modelForTask(config, 'judge');
 
-  const { value } = await model.parse<{ groups: JudgedGroup[] }>(
-    SYSTEM, buildPrompt(company, postings, notes), SCHEMA,
-  );
+  // Retry once on a malformed partition before giving up.
+  //
+  // The first dry run mis-partitioned the largest group (8 listings) and the
+  // guard split all eight — the most expensive outcome available, at $0.14 a
+  // lookup. One retry, with the mistake named, is far cheaper than that. The
+  // attempt count is recorded so the rate stays visible rather than silent.
+  const prompt = buildPrompt(company, postings, notes);
+  let value: { groups: JudgedGroup[] } | null = null;
+  let attempts = 0;
 
-  if (!Array.isArray(value?.groups) || !partitionCovers(value.groups, shown)) {
-    return splitAll(postings, 'key',
-      'the judge returned a partition that did not cover the listings exactly once');
+  for (const extra of ['', RETRY_HINT(shown.map((p) => p.jobId))]) {
+    attempts++;
+    const res = await model.parse<{ groups: JudgedGroup[] }>(SYSTEM, prompt + extra, SCHEMA);
+    if (Array.isArray(res.value?.groups) && partitionCovers(res.value.groups, shown)) {
+      value = res.value;
+      break;
+    }
+  }
+
+  if (!value) {
+    return {
+      ...splitAll(postings, 'key',
+        'the judge returned a partition that did not cover the listings exactly once, twice'),
+      attempts,
+    };
   }
 
   const groups = splitOnUnsure(value.groups, shown);
@@ -238,5 +271,6 @@ export async function judgeCandidate(
     decider: model.id,
     partial: overflow.length > 0,
     priorCorrections: notes.length,
+    attempts,
   };
 }

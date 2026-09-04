@@ -8,7 +8,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   splitAll, splitOnUnsure, partitionCovers, buildPrompt,
-  SCHEMA, type CandidatePosting, type JudgedGroup,
+  SCHEMA, RETRY_HINT, type CandidatePosting, type JudgedGroup,
 } from './judge.js';
 
 const p = (jobId: string, title: string, description = 'x'.repeat(200)): CandidatePosting =>
@@ -23,6 +23,10 @@ const SKYDREAMS = [
 
 const group = (jobIds: string[], confident: boolean): JudgedGroup =>
   ({ jobIds, roleTitle: 'Senior Product Manager', reasoning: 'because', confident });
+
+/** The prompt is hard-wrapped, so phrases span newlines. Match on the words. */
+const flat = (company: string, ps: CandidatePosting[], notes: string[] = []): string =>
+  buildPrompt(company, ps, notes).replace(/\s+/g, ' ');
 
 describe('never trusting the returned partition', () => {
   test('a partition covering every listing once is accepted', () => {
@@ -112,8 +116,8 @@ describe('the prompt', () => {
     assert.ok(!buildPrompt('Skydreams', SKYDREAMS, []).includes('TOLD BEFORE'));
   });
 
-  test('tells the judge that being unsure is a useful answer', () => {
-    assert.match(buildPrompt('Skydreams', SKYDREAMS, []), /unsure/);
+  test('tells the judge what an unconfident group leads to', () => {
+    assert.match(flat('Skydreams', SKYDREAMS), /An unconfident group is SPLIT/);
   });
 
   test('only the first 12 listings are shown, so context cannot run away', () => {
@@ -141,5 +145,40 @@ describe('the schema the provider will actually accept', () => {
     };
     walk(SCHEMA, '');
     assert.deepEqual(offenders, []);
+  });
+});
+
+describe('the retry, added after the first dry run', () => {
+  // The judge mis-partitioned an eight-listing group and the guard split all
+  // eight — the most expensive outcome available at $0.14 a lookup. One retry
+  // naming the mistake is far cheaper than that.
+  test('the hint lists every id that must appear exactly once', () => {
+    const hint = RETRY_HINT(['greenhouse:1', 'greenhouse:2']);
+    assert.match(hint, /did not partition the listings correctly/);
+    assert.match(hint, /greenhouse:1/);
+    assert.match(hint, /greenhouse:2/);
+    assert.match(hint, /none may be repeated/);
+  });
+
+  test('the fallback reports it was asked twice', () => {
+    assert.equal(splitAll(SKYDREAMS, 'key', 'x').attempts, 0);
+  });
+});
+
+describe('what confidence is defined to mean', () => {
+  // The dry run showed the judge reasoning correctly and then hedging, which
+  // split a group it had itself identified as one job. That is a prompt
+  // problem, not a rule problem.
+  test('the prompt says confidence is not certainty', () => {
+    const text = flat('Skydreams', SKYDREAMS);
+    assert.match(text, /Not certainty/);
+    assert.match(text, /would a reasonable person/i);
+    assert.match(text, /do not hedge on a judgement you have already made/i);
+  });
+
+  test('and says what an unconfident group costs, both ways', () => {
+    const text = flat('Skydreams', SKYDREAMS);
+    assert.match(text, /wrong merge silently hides a job/);
+    assert.match(text, /wastes a paid contact lookup/);
   });
 });
