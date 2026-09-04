@@ -289,11 +289,14 @@ export interface Role {
   first_seen: string;
 }
 
-export const upsertRole = (id: string, company: string, roleKey: string, title: string): void => {
+export const upsertRole = (
+  id: string, company: string, roleKey: string, title: string, unit = 'default',
+): void => {
   db.prepare(
-    `INSERT INTO roles (id, company, role_key, title, first_seen) VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO roles (id, company, role_key, title, first_seen, unit)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO NOTHING`,
-  ).run(id, company, roleKey, title, new Date().toISOString());
+  ).run(id, company, roleKey, title, new Date().toISOString(), unit);
 };
 
 export const setRoleId = (jobId: string, roleId: string): void => {
@@ -438,6 +441,11 @@ export function spentLast24h(): number {
     .get(since) as { total: number };
   return row.total;
 }
+
+/** For UPDATE / DELETE / INSERT. `q` uses .all(), which throws on those. */
+export const run = (sql: string, ...params: unknown[]): void => {
+  db.prepare(sql).run(...params);
+};
 
 export const q = <T>(sql: string, ...params: unknown[]): T[] =>
   db.prepare(sql).all(...params) as T[];

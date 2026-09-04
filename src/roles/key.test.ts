@@ -23,19 +23,19 @@ const BJAK = [
 
 describe('the ten real Bjak titles', () => {
   test('collapse to two roles, not ten', () => {
-    const keys = new Set(BJAK.map((t) => roleKey('Bjak', t)));
+    const keys = new Set(BJAK.map((t) => roleKey('Bjak', 'default', t)));
     assert.equal(keys.size, 2, [...keys].join(' | '));
   });
 
   test('and those two are the two job levels, not an artefact', () => {
-    const keys = [...new Set(BJAK.map((t) => roleKey('Bjak', t)))].sort();
-    assert.deepEqual(keys, ['bjak::product lead', 'bjak::technical product lead']);
+    const keys = [...new Set(BJAK.map((t) => roleKey('Bjak', 'default', t)))].sort();
+    assert.deepEqual(keys, ['bjak::default::product lead', 'bjak::default::technical product lead']);
   });
 
   // Real data, not a hypothetical: this row is stored with a leading space.
   test('a leading space does not create a third role', () => {
-    assert.equal(roleKey('Bjak', ' Product Lead - AI Investing App'),
-                 roleKey('Bjak', 'Product Lead - AI Stockbroking'));
+    assert.equal(roleKey('Bjak', 'default', ' Product Lead - AI Investing App'),
+                 roleKey('Bjak', 'default', 'Product Lead - AI Stockbroking'));
   });
 
   test('the qualifier is kept, so a group can be read and argued with', () => {
@@ -47,8 +47,8 @@ describe('the ten real Bjak titles', () => {
 describe('what must NOT merge', () => {
   test('two genuinely different roles at one company stay apart', () => {
     assert.notEqual(
-      roleKey('Skydreams', 'Senior Product Manager - Homedeal'),
-      roleKey('Skydreams', 'Finance Operations Specialist'),
+      roleKey('Skydreams', 'default', 'Senior Product Manager - Homedeal'),
+      roleKey('Skydreams', 'default', 'Finance Operations Specialist'),
     );
   });
 
@@ -76,18 +76,18 @@ describe('what must NOT merge', () => {
    */
   test('KNOWN LIMITATION: two brands under one parent merge, and should not', () => {
     assert.equal(
-      roleKey('Skydreams', 'Senior Product Manager - Homedeal'),
-      roleKey('Skydreams', 'Senior Product Manager - Moving24'),
+      roleKey('Skydreams', 'default', 'Senior Product Manager - Homedeal'),
+      roleKey('Skydreams', 'default', 'Senior Product Manager - Moving24'),
     );
   });
 
   test('the same title at two companies is two roles', () => {
-    assert.notEqual(roleKey('Bjak', 'Product Lead'), roleKey('Skydreams', 'Product Lead'));
+    assert.notEqual(roleKey('Bjak', 'default', 'Product Lead'), roleKey('Skydreams', 'default', 'Product Lead'));
   });
 
   test('seniority is part of the role, not a qualifier', () => {
-    assert.notEqual(roleKey('X', 'Senior Product Manager'), roleKey('X', 'Product Manager'));
-    assert.notEqual(roleKey('X', 'Technical Product Lead - A'), roleKey('X', 'Product Lead - A'));
+    assert.notEqual(roleKey('X', 'default', 'Senior Product Manager'), roleKey('X', 'default', 'Product Manager'));
+    assert.notEqual(roleKey('X', 'default', 'Technical Product Lead - A'), roleKey('X', 'default', 'Product Lead - A'));
   });
 });
 
@@ -122,7 +122,7 @@ describe('degenerate titles', () => {
   // company would then collapse into one nameless role.
   test('a title that is only a qualifier keeps its whole title', () => {
     assert.equal(roleCore('- AI Finance'), '- AI Finance');
-    assert.notEqual(roleKey('Bjak', '- AI Finance'), roleKey('Bjak', '- AI Neobank'));
+    assert.notEqual(roleKey('Bjak', 'default', '- AI Finance'), roleKey('Bjak', 'default', '- AI Neobank'));
   });
 
   test('a very short core falls back rather than keying to nearly nothing', () => {
@@ -130,11 +130,48 @@ describe('degenerate titles', () => {
   });
 
   test('an empty title does not throw', () => {
-    assert.equal(roleKey('Bjak', ''), 'bjak::');
+    assert.equal(roleKey('Bjak', 'default', ''), 'bjak::default::');
     assert.equal(qualifierOf(''), '');
   });
 
   test('case and inner whitespace do not create separate roles', () => {
-    assert.equal(roleKey('BJAK', 'Product   Lead  -  A'), roleKey('bjak', 'product lead - B'));
+    assert.equal(roleKey('BJAK', 'default', 'Product   Lead  -  A'), roleKey('bjak', 'default', 'product lead - B'));
+  });
+});
+
+describe('the unit segment', () => {
+  // Finding 8.c: the single-unit case must be provably inert, or every company
+  // without a taxonomy silently regroups.
+  test("a single unit reproduces the pre-taxonomy grouping exactly", () => {
+    const keys = new Set(BJAK.map((t) => roleKey('Bjak', 'default', t)));
+    assert.equal(keys.size, 2);
+  });
+
+  // The whole reason for the segment: Bjak runs BJAK and KIRA, and the same
+  // job title under each is two jobs with two managers.
+  test('the same title under two units is two roles', () => {
+    assert.notEqual(
+      roleKey('Bjak', 'bjak', 'Technical Product Lead - AI Neobank'),
+      roleKey('Bjak', 'kira', 'Technical Product Lead - AI Neobank App'),
+    );
+  });
+
+  test('different titles under one unit still merge', () => {
+    assert.equal(
+      roleKey('Bjak', 'kira', 'Technical Product Lead - AI Neobank App'),
+      roleKey('Bjak', 'kira', 'Technical Product Lead - AI Finance App'),
+    );
+  });
+
+  // Finding 1.d — a segment containing "::" would corrupt the id, and a
+  // company can genuinely be named that way.
+  test('no segment can smuggle a separator into the id', () => {
+    assert.equal(roleKey('A::B', 'x', 'Lead').split('::').length, 3);
+    assert.equal(roleKey('Bjak', 'A::B', 'Lead').split('::').length, 3);
+  });
+
+  test('an empty segment still yields an id of three parts', () => {
+    assert.equal(roleKey('', '', 'Lead').split('::').length, 3);
+    assert.match(roleKey('', '', 'Lead'), /^unknown::unknown::lead$/);
   });
 });

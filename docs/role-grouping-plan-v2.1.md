@@ -492,3 +492,73 @@ the parts to get right.
 
 Cost: two calls, roughly thirty cents. v2.0 spent about two dollars across two
 dry runs to reach a worse answer.
+
+---
+
+## 11. Step 4 — done (2026-09-04)
+
+`roleKey` takes a unit, the taxonomies are saved, and the store is regrouped.
+
+```
+  38 live posting(s) grouped into 12 role(s).
+  26 are further listings of a role already kept.
+  7 role(s) from the old key shape removed.
+```
+
+Twelve roles, exactly what §10 predicted. `npm run roles`:
+
+```
+  Bjak (BJAK) — Product Engineer            4 listings
+  Bjak (BJAK) — Product Lead                3
+  Bjak (BJAK) — Product Manager             3
+  Bjak (BJAK) — Product Owner, Technical    4
+  Bjak (BJAK) — Technical Product Lead      4
+  Bjak (BJAK) — Technical Product Manager   4
+  Bjak (KIRA) — Product Lead                4
+  Bjak (KIRA) — Product Manager             2
+  Bjak (KIRA) — Technical Product Lead      4
+  Bjak (KIRA) — Technical Product Manager   4
+  Skydreams (Homedeal) — Senior Product Manager   1
+  Skydreams (Moving24) — Senior Product Manager   1
+```
+
+**The wrong merge that started this is fixed.** Skydreams is two roles.
+
+### 11.1 Finding 7.b, and what it actually turned out to be
+
+`contacts.role_id` was added in scope A and **never written by anything** —
+`recordContact` does not set it. All five rows held `NULL`. So the remap did
+not repair broken links; it populated a column that had been empty since it was
+added.
+
+Four contacts now point at `skydreams::homedeal::senior product manager`. The
+fifth is `test:1`, a dangling row whose job does not exist in `jobs` — left
+over from the ESM-hoisting incident that wrote test data into the real store.
+The `WHERE EXISTS` guard correctly skipped it. **Flagged, not deleted:**
+removing rows from the live store is Mahi's call.
+
+Verified live rather than unit-tested. The remap is a single SQL statement over
+a real store, and the check that mattered was whether four real contacts landed
+on ids that exist in `roles` — which they do.
+
+### 11.2 Two counters that under-reported
+
+Both cosmetic, both would have misled a reader into thinking nothing happened.
+
+- Postings **already** `variant` were not counted, so a re-run said "0 became
+  variants" while 26 of them were.
+- `contacts.role_id` was compared with `!=`, which is never true against `NULL`,
+  so the four rows actually written were reported as zero.
+
+### 11.3 Finding 7.d
+
+`npm run roles` prints the brand's display name, never the slug — `KIRA`, not
+`kira`. The slug is an id detail; the name is what a person would recognise on
+a careers page.
+
+### 11.4 What is left
+
+Step 5 (deriving a taxonomy inside `poll.ts` for an unseen company) and step 6
+(`--correct` on a taxonomy, and retrieval of taxonomy corrections). `poll`
+currently READS a stored taxonomy and falls back to a single unit, so it is
+correct and unbillable for known companies and inert for new ones.
