@@ -67,6 +67,45 @@ One judged scorer, last: `right_person` — is this plausibly who decides? It ru
 **blind to which model produced the answer**, or a comparison judged by one of
 its own contestants flatters that contestant.
 
+#### What §2.2 actually shipped (deviations, for ratification)
+
+Three changes against the table above. None were forced by a blocker; each was
+a better answer found while building, so each needs Mahi's yes or no.
+
+1. **`@mastra/evals` added as a dependency.** The plan assumed `createScorer`
+   and nothing else. `@mastra/evals/scorers/prebuilt` ships
+   `createTrajectoryScorerCode`, which grades four dimensions at once —
+   expected-step accuracy, efficiency (`maxSteps`, `noRedundantCalls`),
+   forbidden tools, and tool-failure patterns. That is strictly more than the
+   loop detector this project would have written, and it is tested upstream.
+   Stress-test finding 2.c asked for a trajectory scorer; this is it, not built
+   here. Its test utilities (`createAgentTestRun`, `createTrajectoryTestRun`)
+   also mean the scorer tests construct runs the way the framework does rather
+   than the way we guess it does — which is how a renamed field once turned a
+   working model into a reported fabricator.
+
+2. **`right_company` became `right_contact`, and `no_fabrication` was
+   re-scoped.** The plan had `no_fabrication` mean "on a `nobody_findable`
+   case, naming anyone fails". That is now `right_contact`'s job: a
+   `nobody_findable` case has an empty acceptable list, so committing nobody is
+   the correct answer and one scorer covers both directions. `no_fabrication`
+   instead asks, on every case, whether the person named appears anywhere in
+   what the tools returned. The split matters: naming a real employee who is
+   not the best contact is a judgement call, naming somebody who does not exist
+   is the one failure that reaches a stranger's inbox. Collapsed into one
+   scorer, both read 0 and the difference disappears. Nothing now checks
+   employer independently for a contact *not* on the accepted list — the judged
+   `right_person` rubric covers it, and that is a real (small) gap.
+
+3. **`efficiency` dropped as a scorer.** Redundancy and step budget are inside
+   the trajectory scorer; cost and wall time are facts to report, not tests to
+   pass, and they belong in §2.3's table. A scorer that never passes or fails
+   only exists to be averaged into something meaningless.
+
+Also fixed while here: `npm test` ran `src/**/*.test.ts` unquoted, which the
+shell expands one level deep. Every test nested two levels down had never run.
+Quoting it hands the glob to Node. Suite went 44 → 75, of which 31 are new.
+
 ### 2.3 Experiment runner
 
 `src/eval/experiment.ts` wrapping `dataset.startExperiment()`. Runs
@@ -266,12 +305,13 @@ are listed first in §7.11.
 
 - 10.a: ten cases catches large regressions and misses subtle ones. Accepted;
   growing the set is cheap once the runner exists.
-- 10.b: **[Mahi-verify]** — the case set encodes your judgment of who the right
-  contact is. If that judgment is systematically off, every score inherits it
-  and the agent optimises toward the wrong target. Loop 2 (real reply data) is
-  the only correction, and it is months away. Worth deciding whether ten cases
-  labelled by one person is enough to steer on, or whether the first cases
-  should be ones where a reply actually happened.
+- 10.b: the case set encodes Mahi's judgment of who the right contact is, and
+  every score inherits it. **RESOLVED 2026-09-04 (Mahi): start anyway.** Perfect
+  ground truth is not available and waiting for reply data means waiting months
+  to measure anything at all. His judgment is the best signal available today.
+  Loop 2 corrects it when outcomes accumulate, which is why §2.4 ships in this
+  sprint rather than later, and why the tune/held-out split exists — it at least
+  prevents fitting the labels rather than the job.
 
 ### 7.11 Net v2.0 changes
 

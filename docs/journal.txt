@@ -418,3 +418,136 @@ Files
   src/enrich/               only mcp.ts survives
 
 Tests: 42 -> 29. npm run typecheck clean.
+
+
+2026-09-04 (cont.) — Sprint 1 §2.5, and three bugs found by looking
+---------------------------------------------------------------------
+Mahi resolved the open [Mahi-verify] on the case set: start anyway. Perfect
+ground truth is not available and waiting for reply data means waiting months
+to measure anything. His judgement is the best signal today; Loop 2 corrects it
+when outcomes accumulate, which is why outcome capture ships this sprint and
+why the tune/held-out split exists.
+
+record_no_contact. Committing to "nobody" is now an explicit answer rather than
+something inferred from free text. The runner previously labelled it `no_block`
+— failure — while the prompt told the model not to call record_contact in
+exactly that case. Correct behaviour scored as failure. It also makes the
+`nobody_findable` cases scoreable: calling it is the pass, committing a person
+is the fail.
+
+Actor liveness. Every actor call now records its row count. Three consecutive
+empties across different companies marks a source degraded; one or two does not,
+because companies genuinely have nobody matching a title filter. An errored call
+is excluded entirely — it tells you nothing about whether the source has data.
+When a source IS measurably degraded the tool says so to the model rather than
+deciding for it: "this source has returned nothing on every recent call, so it
+is probably having trouble rather than telling you the company is empty."
+
+That last part is a correction Mahi pushed for twice. An earlier version retried
+the second source automatically. The justification — that the model cannot tell
+an outage from a real empty result — was wrong, because the right action is the
+same either way, so the decision never needed the diagnosis. What the model
+lacked was information, and the fix for missing information is to supply it.
+
+Three bugs found while checking, none of them planned work:
+
+  1. TWO ORPHANED PROCESSES were alive on a memory-tight box, both having
+     finished their work and printed results. run.ts closed src/agent/mcp.ts's
+     client — unused since the tool refactor — while the tools opened
+     src/enrich/mcp.ts's, which nothing ever closed. Consolidated: one Apify
+     client at src/agent/apify.ts, closed by the runner, src/enrich deleted.
+
+  2. A FLAKY TEST that passed once and then failed with climbing counts.
+
+  3. The cause of (2), and the instructive one: ESM hoists `import` above
+     module-level code, so `process.env['JOB_AGENT_DB'] = ...` at the top of the
+     test file ran AFTER db.ts had already opened the real database. The
+     liveness tests were writing into production state — 99 rows, removed. The
+     fix is a dynamic import after the assignment, and any future test touching
+     the store must do the same.
+
+Files
+  src/agent/tools/index.ts   record_no_contact; row counts; degradation message
+  src/agent/enrich-agent.ts  prompt names record_no_contact
+  src/agent/run.ts           answered_none; closes the right MCP client
+  src/store/db.ts            actor_calls table, actorHealth()
+  src/store/liveness.test.ts (new, 6 tests)
+  src/agent/apify.ts         moved from src/enrich/mcp.ts
+  docs/architecture.md       (new)
+  docs/sprint-01-plan.md     v2.0 + 10-dimension stress test
+
+Tests: 29 -> 35. npm run typecheck clean, stable across repeated runs.
+
+
+2026-09-04  Sprint 1 §2.1 + §2.2 — the case set and the scorers
+
+The harness now has both halves it was missing: a set of postings whose right
+answer is known, and code that says whether a run got there.
+
+§2.1, the case set. `cases.ts` holds the schema, `prepare-cases.ts` generates a
+grading sheet, `check-cases.ts` refuses a set that cannot measure anything —
+fewer than two `nobody_findable` cases and nothing ever tests for fabrication;
+fewer than two holdout cases and tuning fits the labels and calls it progress.
+The sheet deliberately pre-fills no suggested answer. If it did, grading would
+collapse into agreeing with the machine, and the set would measure whether the
+agent agrees with me rather than whether it is right.
+
+§2.2, the scorers. Four questions, one scorer each, because a single blended
+number tells you a run got 0.6 and nothing about which half was wrong:
+`answered`, `right_contact`, `no_fabrication`, `grounded`. The last two are
+gates — naming somebody who does not exist, or attaching an invented sentence
+to somebody who does, is not a worse run, it is the one outcome that reaches a
+stranger and cannot be taken back.
+
+Two decisions in there are worth more than the code:
+
+  COMMITTING "NOBODY" IS AN ANSWER. It scores 1 on `answered`, and on a
+  `nobody_findable` case it is the correct answer on `right_contact` too. The
+  runner used to infer this from free text and label it `no_block`, i.e.
+  failure, while the prompt told the model to do exactly that. Same class of
+  error as a step ceiling reported as "NO USABLE ANSWER": correct behaviour
+  scored as failure.
+
+  AN UNSCOREABLE RUN IS NOT A ZERO. When evidence tools were called and
+  returned nothing, `grounded` throws instead of scoring. A blank transcript is
+  a broken harness, and scoring a harness fault as a model failure is the single
+  mistake that has wasted the most time on this project. It fails loud now.
+
+The trajectory scorer is Mastra's, not ours — `createTrajectoryScorerCode` from
+@mastra/evals, which grades expected steps, redundancy, step budget and tool
+failures together. This is the scorer that would have caught the largest finding
+of the day before without a human reading a trace: on Apify's raw MCP surface a
+120B model made eighteen consecutive searches and never read a result. No error,
+no answer, nothing a single number would have shown. There is a test for exactly
+that shape.
+
+`right_person`, the judged scorer, is built and blind by construction: its
+rubric function takes a case and nothing else, so there is no path by which the
+judge learns which model produced the answer. A comparison judged by one of its
+own contestants flatters that contestant, and the whole point is comparing a
+small local model against a large hosted one.
+
+Found while here: `npm test` ran `src/**/*.test.ts` unquoted. The shell expands
+that one level deep, so every test file nested two levels down had never run
+once. Quoted, the glob goes to Node.
+
+Deviations from the plan's §2.2 table — a new dependency, `right_company`
+folded into `right_contact`, `efficiency` dropped — are written up in
+sprint-01-plan.md under "What §2.2 actually shipped" and need ratifying.
+
+Files
+  src/eval/cases.ts               case schema, load/save, validateCases
+  src/eval/prepare-cases.ts       grading-sheet generator
+  src/eval/check-cases.ts         set validator, non-zero exit
+  src/eval/cases.test.ts          (new, 9 tests)
+  src/eval/scorers/commitment.ts  reads a run back via Mastra's extractors
+  src/eval/scorers/index.ts       answered, right_contact, no_fabrication,
+                                  grounded, trajectory
+  src/eval/scorers/judged.ts      right_person rubric, blind
+  src/eval/scorers/scorers.test.ts (new, 26 tests)
+  src/eval/scorers/judged.test.ts  (new, 5 tests)
+  package.json                    @mastra/evals; quoted test glob
+  docs/sprint-01-plan.md          §2.2 deviations recorded
+
+Tests: 35 -> 75 (31 new; 9 of the rest were nested files that had never run).
+npm run typecheck clean.

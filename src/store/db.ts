@@ -61,6 +61,13 @@ db.exec(`
     usd       REAL NOT NULL,
     note      TEXT
   );
+  CREATE TABLE IF NOT EXISTS actor_calls (
+    at     TEXT NOT NULL,
+    actor  TEXT NOT NULL,
+    rows   INTEGER NOT NULL,
+    errored INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS actor_calls_actor ON actor_calls(actor, at);
   CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
   CREATE INDEX IF NOT EXISTS jobs_seen  ON jobs(first_seen);
 `);
@@ -119,6 +126,48 @@ export const recordDraft = (jobId: string, kind: string, body: string) =>
 export const recordSpend = (actor: string, usd: number, note?: string) =>
   db.prepare('INSERT INTO spend (at, actor, usd, note) VALUES (?, ?, ?, ?)')
     .run(new Date().toISOString(), actor, usd, note ?? null);
+
+/**
+ * Every actor call and how many rows it returned.
+ *
+ * A source that returns zero for ONE company is data. A source that returns
+ * zero for EVERY company is an outage, and the two are indistinguishable from
+ * inside a single call. On 2026-09-04 linkedin-profile-search returned zero
+ * rows for every company including Booking.com, having worked three hours
+ * earlier — and both models correctly-but-wrongly concluded "no people at this
+ * company". Recording the rate is what makes that difference visible.
+ */
+export const recordActorCall = (actor: string, rows: number, errored = false) =>
+  db.prepare('INSERT INTO actor_calls (at, actor, rows, errored) VALUES (?, ?, ?, ?)')
+    .run(new Date().toISOString(), actor, rows, errored ? 1 : 0);
+
+export interface ActorHealth {
+  actor: string;
+  calls: number;
+  emptyCalls: number;
+  /** True when it has been called several times recently and returned nothing at all. */
+  degraded: boolean;
+}
+
+/**
+ * Health over the trailing window. Degraded means at least three calls and
+ * every one empty — one or two empties is ordinary, since plenty of companies
+ * genuinely have nobody matching a title filter.
+ */
+export function actorHealth(hours = 6): ActorHealth[] {
+  const since = new Date(Date.now() - hours * 3_600_000).toISOString();
+  const rows = q<{ actor: string; calls: number; empties: number }>(
+    `SELECT actor, COUNT(*) AS calls, SUM(CASE WHEN rows = 0 THEN 1 ELSE 0 END) AS empties
+     FROM actor_calls WHERE at >= ? AND errored = 0 GROUP BY actor`,
+    since,
+  );
+  return rows.map((r) => ({
+    actor: r.actor,
+    calls: r.calls,
+    emptyCalls: r.empties,
+    degraded: r.calls >= 3 && r.empties === r.calls,
+  }));
+}
 
 /** Rolling 24h Apify spend, so the enrich budget is enforceable. */
 export function spentLast24h(): number {

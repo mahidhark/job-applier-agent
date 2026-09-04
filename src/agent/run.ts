@@ -21,10 +21,14 @@ import { q, recordContact } from '../store/db.js';
 import type { ProviderName } from '../ai/index.js';
 import type { JobPosting } from '../sources/types.js';
 import { buildEnrichAgent, enrichGoal } from './enrich-agent.js';
-import { TOOL_COST_USD, type EnrichResult } from './tools/index.js';
+import { TOOL_COST_USD, type EnrichOutcome } from './tools/index.js';
 import { type Verdict } from './grounding.js';
 import { spentLast24h } from '../store/db.js';
-import { closeMcp } from './mcp.js';
+// The Apify connection the TOOLS use. An earlier version closed
+// src/agent/mcp.ts's client instead — a different one, unused since the tool
+// refactor — so a run finished its work and then hung forever on an open
+// socket. Two orphaned processes were found alive on a memory-tight box.
+import { closeMcp } from './apify.js';
 
 const args = process.argv.slice(2);
 
@@ -69,7 +73,8 @@ export interface RunRecord {
   toolCalls: Array<{ name: string; ok: boolean; argsPreview: string }>;
   unknownTools: string[];
   /** Why it stopped. `max_steps` is not the same failure as `no answer`. */
-  stopReason: 'answered' | 'max_steps' | 'no_block' | 'error';
+  /** `answered_none` is a successful answer: it searched and committed that nobody is reachable. */
+  stopReason: 'answered' | 'answered_none' | 'max_steps' | 'no_block' | 'error';
   finalText: string;
   /** First raw step, verbatim. Provider step shapes differ and are undocumented
    *  enough that guessing at a field name silently mislabels every tool call. */
@@ -105,7 +110,7 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
   const unknownTools: string[] = [];
   const transcript = { text: '' };
   let rawFirstStep: unknown;
-  let committed: EnrichResult | null = null;
+  let committed: EnrichOutcome | null = null;
 
   // Budget is enforced by refusing the call, not by billing and apologising.
   const dailyLeft = config.enrich.maxSpendPerDayUsd - spentLast24h();
@@ -121,7 +126,7 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
     const { agent, label, toolNames, providerOptions } = buildEnrichAgent({
       config: config.ai,
       provider,
-      toolContext: { jobId: job.id, transcript, charge, onFinish: (r) => { committed = r; } },
+      toolContext: { jobId: job.id, transcript, charge, onFinish: (o) => { committed = o; } },
     });
     const known = new Set(toolNames);
 
@@ -157,28 +162,33 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
     const finalText = String((res as { text?: string }).text ?? '');
 
     // record_contact already refused an ungrounded observation, so a committed
-    // result is grounded by construction. That is the point of enforcing it in
+    // contact is grounded by construction. That is the point of enforcing it in
     // the tool rather than scoring afterwards.
-    const done = committed as EnrichResult | null;
-    const parsed = done
-      ? { CONTACT: done.name, TITLE: done.title, PROFILE: done.profileUrl,
-          OBSERVATION: done.observation || 'NONE', SOURCE: done.observationSource || 'NONE',
-          WHY: done.reasoning }
-      : null;
-    const grounded: Verdict | null = done
-      ? (done.observation ? 'grounded' : 'no_claim')
+    const done = committed as EnrichOutcome | null;
+    const contact = done?.contact ?? null;
+
+    const parsed = contact
+      ? { CONTACT: contact.name, TITLE: contact.title, PROFILE: contact.profileUrl,
+          OBSERVATION: contact.observation || 'NONE', SOURCE: contact.observationSource || 'NONE',
+          WHY: contact.reasoning }
       : null;
 
-    const stopReason: RunRecord['stopReason'] = parsed
+    const grounded: Verdict | null = contact
+      ? (contact.observation ? 'grounded' : 'no_claim')
+      : null;
+
+    // Committing "nobody" is an answer. Only never committing at all is not.
+    const stopReason: RunRecord['stopReason'] = contact
       ? 'answered'
+      : done && !done.found ? 'answered_none'
       : toolCalls.length >= MAX_STEPS ? 'max_steps' : 'no_block';
 
     return {
-      provider: label, jobId: job.id, ok: Boolean(parsed), wallMs: Date.now() - started,
+      provider: label, jobId: job.id, ok: Boolean(done), wallMs: Date.now() - started,
       steps: toolCalls.length, toolCalls, unknownTools, stopReason, finalText,
       rawFirstStep, transcriptChars: transcript.text.length,
       transcriptSample: transcript.text.slice(0, 20000), parsed, grounded,
-      ...(committed ? {} : { groundingReason: 'the agent never called record_contact' }),
+      ...(done ? {} : { groundingReason: 'the agent committed to neither a contact nor an absence' }),
     };
   } catch (err) {
     return {
@@ -194,6 +204,7 @@ function report(r: RunRecord): void {
   console.log(`\n  ${r.provider}`);
   const verdict = {
     answered: 'produced an answer',
+    answered_none: 'searched and committed that nobody is reachable',
     max_steps: `RAN OUT OF STEPS (limit ${MAX_STEPS})`,
     no_block: 'stopped without the required block',
     error: 'ERRORED',
