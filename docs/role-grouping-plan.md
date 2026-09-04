@@ -352,3 +352,73 @@ See finding #7.a.
 - **[Mahi-verify] 2.b / 10.c** — after the first grouping run, confirm the Bjak
   groups are right before `cases:prepare` spends anything.
 - **Scope (10.d)** — steps 1-3, or all seven?
+
+---
+
+## 9. What the first run showed (execution notes, v1.0)
+
+Two corrections to the plan, both found by building it. Neither changes the
+design, so this is an execution record rather than a v1.1 amendment; if the
+splitting strategy in §3.2 needs to change, that is a v2.0 with a fresh
+10-dimension pass.
+
+### 9.1 §3.3's first tiebreak was impossible
+
+The plan chose a representative by "location passes, preferred over one that
+does not". That can never discriminate: `passed()` is an AND across every gate,
+so **every survivor has already passed `location_eligible`**. The tiebreak is
+now freshest → best scored → lowest id. Finding 6.c evaporates with it — no
+screening predicate needs passing in, so the coupling it worried about never
+arises.
+
+### 9.2 Finding 2.b materialised on the first run, exactly as described
+
+38 postings became **7 roles**. Six are right: Bjak advertises six genuinely
+different levels — Product Engineer, Product Lead, Product Manager, Product
+Owner Technical, Technical Product Lead, Technical Product Manager — and within
+each, the listings differ only by product line (AI Finance, AI Neobank, AI
+Investing, AI Stockbroking). One job per level, advertised four to eight times.
+
+The seventh is **wrong**:
+
+```
+  Skydreams — Senior Product Manager
+   →  65.7  Homedeal   · Utrecht (Hybrid)
+      65.5  Moving24   · Utrecht          [variant]
+```
+
+Homedeal and Moving24 are **brands under one parent**, not product variants of
+one job. The store corroborates it: a rejected `Junior Customer Success Manager
+(French speaking) - Moving24` shows the same qualifier reused on an unrelated
+role. Two brands means two managers — the contact already found for the
+Homedeal role was "Brand Captain, Homedeal". These are two jobs, and one is
+now hidden behind the other.
+
+**No key can fix this.** `Senior Product Manager - Moving24` is structurally
+identical to `Technical Product Lead - AI Neobank`, which *should* merge. The
+same shape means different things at two companies and the title carries
+nothing that separates them. A cleverer regex would only move the error.
+
+So the plan's response to 2.b is not a hedge, it is the mechanism: the variant
+stayed visible, `npm run roles` printed it, and the wrong merge was caught on
+the first run rather than by noticing a missing opportunity weeks later.
+
+Recorded as a deliberately-failing-by-design assertion in
+`src/roles/key.test.ts` — the suite states the limitation rather than a doc
+nobody re-reads, and it becomes the first case for splitting.
+
+### 9.3 A test that was passing on invented data
+
+`key.test.ts` asserted "two genuinely different roles at one company stay
+apart" using an invented Skydreams title. The real second Skydreams posting is
+the Moving24 one, which merges. The test would have passed forever while the
+behaviour it claimed to protect was already broken.
+
+This is finding 8.a landing on its own author. Corrected to use the real
+titles.
+
+### 9.4 [Mahi-verify] — outstanding
+
+Is the Skydreams merge worth a splitting mechanism now, or is telling me enough
+for the moment? That was the open question when scope A was chosen, and the
+first run has now supplied the evidence it was waiting for.

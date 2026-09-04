@@ -15,6 +15,20 @@ mkdirSync(dirname(DB_PATH), { recursive: true });
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
+/**
+ * Columns added after the table first shipped.
+ *
+ * `CREATE TABLE IF NOT EXISTS` cannot add a column to a table that already
+ * exists, and this repo has no migration runner, so new columns are added
+ * here, guarded, and are always nullable — an older build must still read the
+ * database.
+ */
+function addColumn(table: string, column: string, decl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.length || cols.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS jobs (
     id            TEXT PRIMARY KEY,
@@ -28,7 +42,8 @@ db.exec(`
     last_seen     TEXT NOT NULL,
     state         TEXT NOT NULL,
     score         REAL,
-    raw           TEXT NOT NULL
+    raw           TEXT NOT NULL,
+    role_id       TEXT
   );
   CREATE TABLE IF NOT EXISTS gates (
     job_id     TEXT NOT NULL,
@@ -46,6 +61,7 @@ db.exec(`
     source       TEXT NOT NULL,
     context      TEXT,
     found_at     TEXT NOT NULL,
+    role_id      TEXT,
     PRIMARY KEY (job_id, profile_url)
   );
   CREATE TABLE IF NOT EXISTS drafts (
@@ -67,6 +83,13 @@ db.exec(`
     rows   INTEGER NOT NULL,
     errored INTEGER NOT NULL DEFAULT 0
   );
+  CREATE TABLE IF NOT EXISTS roles (
+    id         TEXT PRIMARY KEY,
+    company    TEXT NOT NULL,
+    role_key   TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    first_seen TEXT NOT NULL
+  );
   CREATE INDEX IF NOT EXISTS actor_calls_actor ON actor_calls(actor, at);
   CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
   CREATE INDEX IF NOT EXISTS jobs_seen  ON jobs(first_seen);
@@ -77,7 +100,26 @@ db.exec(`
  * send is a human action, so nothing here ever marks a posting `contacted`.
  * A human does that with `npm run queue -- --sent <id>`.
  */
-export const JOB_STATES = ['seen', 'rejected', 'scored', 'enriched', 'queued', 'sent', 'skipped'] as const;
+// Order matters: the tables must exist before a column can be added to them,
+// and the column must exist before an index can be built on it. Getting this
+// wrong fails on exactly one of the two cases and passes on the other.
+addColumn('jobs', 'role_id', 'TEXT');
+addColumn('contacts', 'role_id', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS jobs_role ON jobs(role_id)');
+
+export const JOB_STATES = [
+  'seen', 'rejected', 'scored', 'enriched', 'queued', 'sent', 'skipped',
+  /**
+   * Another advertisement of a role we already kept.
+   *
+   * Deliberately NOT `skipped`. That state already carries two unrelated
+   * meanings — "a duplicate the machine dropped" and "a role Mahi does not
+   * want" — and grouping would make the first common enough to drown the
+   * second, leaving the count in `npm run status` meaningless. A variant is
+   * not a rejection: it is the same job, seen again.
+   */
+  'variant',
+] as const;
 export type JobState = (typeof JOB_STATES)[number];
 
 export function upsertJob(job: JobPosting, state: JobState): boolean {
@@ -173,6 +215,49 @@ export function actorHealth(hours = 6): ActorHealth[] {
 }
 
 /** Rolling 24h Apify spend, so the enrich budget is enforceable. */
+/**
+ * A role, and the postings that advertise it.
+ *
+ * The id IS the role key, so recording the same role twice is a no-op rather
+ * than a second row. That matters because the backfill must be safe to run
+ * again after it half-finishes.
+ */
+export interface Role {
+  id: string;
+  company: string;
+  role_key: string;
+  title: string;
+  first_seen: string;
+}
+
+export const upsertRole = (id: string, company: string, roleKey: string, title: string): void => {
+  db.prepare(
+    `INSERT INTO roles (id, company, role_key, title, first_seen) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
+  ).run(id, company, roleKey, title, new Date().toISOString());
+};
+
+export const setRoleId = (jobId: string, roleId: string): void => {
+  db.prepare('UPDATE jobs SET role_id = ? WHERE id = ?').run(roleId, jobId);
+};
+
+export interface RolePosting {
+  id: string; title: string; url: string; state: string;
+  score: number | null; posted_at: string | null; location: string | null;
+}
+
+/** Every advertisement of one role, best first. */
+export const postingsInRole = (roleId: string): RolePosting[] =>
+  q<RolePosting>(
+    `SELECT id, title, url, state, score, posted_at, location FROM jobs
+     WHERE role_id = ? ORDER BY score DESC, id ASC`, roleId,
+  );
+
+export const roleOf = (jobId: string): Role | null =>
+  q<Role>(
+    `SELECT r.* FROM roles r JOIN jobs j ON j.role_id = r.id WHERE j.id = ?`, jobId,
+  )[0] ?? null;
+
 export function spentLast24h(): number {
   const since = new Date(Date.now() - 86_400_000).toISOString();
   const row = db.prepare('SELECT COALESCE(SUM(usd), 0) AS total FROM spend WHERE at >= ?')

@@ -11,7 +11,8 @@
  * the funnel with no leverage in it, since acceptance is decided by who you
  * picked and what the note says, both of which happen before the click.
  */
-import { q, setState } from './store/db.js';
+import { q, setState, postingsInRole } from './store/db.js';
+import { qualifierOf } from './roles/key.js';
 import { loadConfig } from './config-file.js';
 
 const args = process.argv.slice(2);
@@ -35,10 +36,14 @@ if (skip) {
 }
 
 const config = loadConfig();
+// One entry per ROLE, not per posting. Variants sit in the `variant` state and
+// are listed underneath rather than competing for a slot — Bjak alone would
+// otherwise fill the whole day's queue with one job advertised eight ways.
 const rows = q<{
   id: string; company: string; title: string; score: number; url: string; state: string;
+  role_id: string | null;
 }>(
-  `SELECT id, company, title, score, url, state FROM jobs
+  `SELECT id, company, title, score, url, state, role_id FROM jobs
    WHERE state IN ('scored', 'enriched', 'queued')
    ORDER BY score DESC LIMIT ?`,
   config.queue.maxPerDay,
@@ -55,6 +60,17 @@ for (const r of rows) {
   console.log(`${'─'.repeat(72)}`);
   console.log(`  ${r.score?.toFixed(1)}  ${r.company} — ${r.title}`);
   console.log(`  ${r.url}`);
+
+  // The same job, advertised again. Shown rather than hidden: the grouping is
+  // a guess, and a wrong one silently costs an opportunity.
+  const others = r.role_id ? postingsInRole(r.role_id).filter((p) => p.id !== r.id) : [];
+  if (others.length) {
+    console.log(`\n  also advertised as ${others.length} other listing${others.length === 1 ? '' : 's'}:`);
+    for (const o of others.slice(0, 8)) {
+      console.log(`    ${qualifierOf(o.title) || o.title}${o.location ? ` · ${o.location}` : ''}`);
+    }
+    if (others.length > 8) console.log(`    ... and ${others.length - 8} more`);
+  }
 
   const contacts = q<{ name: string; title: string; profile_url: string; context: string }>(
     'SELECT name, title, profile_url, context FROM contacts WHERE job_id = ?', r.id,

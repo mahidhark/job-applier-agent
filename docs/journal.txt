@@ -786,3 +786,77 @@ Files
 Tests: 109, unchanged. npm run typecheck clean.
 Spend: ~$0.30 in probes today after the plan change, none recorded in the
 spend table.
+
+
+2026-09-04  Postings become roles
+
+Mahi's observation, and it was the right one: the system thinks in postings
+when it should think in roles. One role gets advertised many times — per
+market, per product line — and the contact is per role, not per advertisement.
+The vision doc already said "a role worth pursuing"; the code had drifted to
+postings and nothing reconciled them.
+
+A dedupe existed and caught almost nothing, because its key was company plus
+EXACT title. Bjak's eight spellings of one job differ by a trailing product
+name, so they were eight roles, eight queue entries, and would have been eight
+paid contact lookups at $0.14 for the same person.
+
+Scope A of docs/role-grouping-plan.md: the key, the schema, grouping in
+poll.ts, and enough output to read what it did. Splitting deliberately left
+out — I did not know what a wrong grouping looked like, and building the undo
+button before seeing the mistake risks building the wrong button.
+
+Result: 38 postings, 7 roles. Queue went from 38 entries to 7.
+
+TWO THINGS THE PLAN GOT WRONG, both found by building it.
+
+  1. The representative was to be chosen partly on location. It cannot be:
+     passed() is an AND over every gate, so every survivor has already passed
+     location_eligible. The tiebreak is freshest, then score, then lowest id.
+     Finding 6.c's coupling worry evaporated with it.
+
+  2. A test asserted "two genuinely different roles at one company stay apart"
+     using a Skydreams title I invented. The real second Skydreams posting
+     merges. The test would have passed forever while the thing it claimed to
+     protect was already broken — finding 8.a landing on its own author, the
+     same week I wrote it after the headline bug.
+
+AND THE FIRST RUN FOUND A REAL WRONG MERGE, which is the useful part.
+
+    Skydreams — Senior Product Manager
+     →  65.7  Homedeal   · Utrecht (Hybrid)
+        65.5  Moving24   · Utrecht          [variant]
+
+Homedeal and Moving24 are brands under one parent, not product lines of one
+job. The store corroborates: a rejected "Junior Customer Success Manager
+(French speaking) - Moving24" reuses the qualifier on an unrelated role. Two
+brands, two managers — the contact already found for Homedeal was "Brand
+Captain, Homedeal". Two jobs, one now hidden behind the other.
+
+No key can fix it. "Senior Product Manager - Moving24" is structurally
+identical to "Technical Product Lead - AI Neobank", which should merge. Same
+shape, different meaning, nothing in the title to separate them.
+
+Which is the argument for the whole design. The group was built as a
+hypothesis: the variant stayed visible, `npm run roles` printed it, and the
+mistake surfaced on the first run instead of as an opportunity quietly missing
+weeks later. Recorded as a deliberately-failing-by-design assertion in the
+suite rather than a doc nobody re-reads.
+
+`variant` is its own state, not `skipped`. Stress-test finding 7.a: `skipped`
+already meant both "a duplicate the machine dropped" and "a role Mahi does not
+want", and grouping would have drowned the second in the first. `npm run
+status` now reads 31 variant, 12 skipped, and both numbers mean something.
+
+Files
+  src/roles/key.ts          (new) roleKey, roleCore, qualifierOf. Pure
+  src/roles/key.test.ts     (new, 16 tests) titles copied from the store
+  src/roles.ts              (new) npm run roles, and --backfill
+  src/store/db.ts           roles table; jobs.role_id, contacts.role_id;
+                            addColumn() guard; variant state
+  src/poll.ts               dedupe replaced by grouping
+  src/queue.ts              one entry per role, variants listed under it
+  src/explain.ts            "not rejected — another listing of a role we kept"
+  docs/role-grouping-plan.md  §9 execution notes
+
+Tests: 109 -> 125. npm run typecheck clean. No spend.
