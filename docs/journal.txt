@@ -551,3 +551,49 @@ Files
 
 Tests: 35 -> 75 (31 new; 9 of the rest were nested files that had never run).
 npm run typecheck clean.
+
+
+2026-09-04  Documentation caught up with the code
+
+No behaviour change. The docs had drifted far enough that README told a new
+reader the enrichment agent did not exist yet, when it had been built, renamed
+from src/enrich/ to src/agent/, run against live postings and measured.
+
+README. Rewrote the status section, which claimed `src/enrich/` and
+`src/draft/` were both unbuilt. The first is built; only the second still is
+not. Added the two things a reader most needs and could not find: what the
+enrichment agent is and why the tool surface is wrapped rather than raw, and
+what the eval harness measures. Quick start had none of the agent or eval
+commands. Corrected an example I had written from memory — `--compare` is
+boolean and means anthropic + cerebras, so `--provider cerebras --compare`
+contradicts itself.
+
+docs/architecture.md. Layer 4 said "Not built. This is Sprint 1." It is built.
+Replaced with what actually exists: the case set and why coverage is by shape,
+the six scorers and why two are gates rather than scores, the unscoreable-run
+rule, and the fact that trajectory grading is Mastra's prebuilt scorer rather
+than ours. Added `record_no_contact` to the tool table, which had been missing
+since it was written.
+
+docs/database.md. New. There was no schema reference at all. Six tables, what
+each is for, and the state machine — where writing it down turned up something
+worth knowing: `JOB_STATES` declares seven states and only five are ever
+written. Nothing sets `enriched` or `queued`. `queue.ts` selects
+`state IN ('scored','enriched','queued')` and works purely because of the
+first. Same trap the Upwork agent has with `screened` and `drafted`. Documented
+rather than fixed — adding a writer is a decision, not a doc edit.
+
+CLAUDE.md. Had no mention of `src/agent/` or `src/eval/`, i.e. of the last two
+sessions' work. Added those, the agent and eval commands with the ones that
+spend money marked, and a "load-bearing and easy to miss" section carrying the
+five traps that have actually bitten: wrap every tool, constrain only what is
+irreversible, the two dead states, unscoreable is not zero, and the ESM hoist
+that let tests write into the production database.
+
+Files
+  README.md               agent + eval sections, corrected status and examples
+  docs/architecture.md    Layer 4 written up; record_no_contact added
+  docs/database.md        (new) schema, state machine, what is deliberately out
+  CLAUDE.md               src/agent, src/eval, commands, the five traps
+
+Tests: 75, unchanged. npm run typecheck clean.
