@@ -396,3 +396,88 @@ Cost: 6 candidate groups × roughly 3k tokens. Cents per pass, and bounded by
 - **10.d** — worth re-asking after the funnel widens: is this a model where a
   rule would do?
 - **Scope** — steps 1-3 (substrate, judge, dry run), or all six?
+
+---
+
+## 11. Step 3 dry run — results (2026-09-04)
+
+Seven candidate groups judged, nothing written. **The central unverified
+assumption (2.a) is now verified, and the run turned up something the plan did
+not anticipate.**
+
+### 11.1 The assumption holds
+
+```
+Skydreams — Senior Product Manager (2) ... SPLITS INTO 2
+  ✓ Senior Product Manager - Moving24
+      Moving24 is a distinct brand (moving company marketplace) with its own
+      team and roadmap.
+  ✓ Senior Product Manager - Homedeal
+      Homedeal is a separate brand (home craftsmen marketplace) with its own
+      leadership and product domain.
+```
+
+Confident, correct, and reasoned from the descriptions — which is exactly the
+information the key never had. **Finding 2.a: VERIFIED.**
+
+### 11.2 The thing nobody knew: Bjak is two brands
+
+```
+Bjak — Technical Product Manager (8) ... SPLITS INTO 2
+  ✓ Technical Product Manager (BJAK Superapp)   [(none), AI Neobank, AI Stockbroking, AI Investing]
+  ✓ Technical Product Manager (KIRA Superapp)   [AI Investing App, AI Finance App, AI Neobank App, AI Stockbroking App]
+      These four are branded KIRA with identical boilerplate and interchangeable
+      product qualifiers — a separate brand from BJAK, so kept as its own group.
+```
+
+**The "App" suffix was never a wording variation. It is a brand marker.** The
+key merged eight listings into one role; there are two, under two brands, and
+they will have different managers. v1.0 read those eight as one job and
+scope A's output looked correct.
+
+No regex would have found this. It required reading the descriptions and
+noticing that four of them carry different company boilerplate.
+
+### 11.3 Two problems, both real
+
+**A malformed partition on the largest group.**
+
+```
+Bjak — Technical Product Lead (8) ... SPLITS INTO 8
+  ? ... the judge returned a partition that did not cover the listings exactly once
+```
+
+Finding 1.c's guard fired and split safely rather than acting on a bad answer,
+which is the guard working. But it means the judge mis-partitioned the biggest
+group, and eight singletons is the most expensive outcome available.
+**ACTIONABLE before step 4** — retry once before falling back, and report the
+retry in the decision so the rate is visible rather than silent.
+
+**Split-on-unsure is costing correct groupings.**
+
+```
+Bjak — Product Manager (5) ... SPLITS INTO 5
+  ? split: These three share the KIRA brand boilerplate and are product-area
+    variants of the same PM opening ...
+  ? split: Both use the BJAK brand description ...
+```
+
+The judge's own reasoning identifies two groups — and is right, matching the
+BJAK/KIRA split it found confidently elsewhere. It marked them unconfident, so
+§4.3 exploded them into five singletons: five contact lookups at $0.14 where
+two would do.
+
+The rule is still right — the errors are not symmetric, and this is the cheap
+direction. But confidence is carrying more weight than the prompt prepares it
+for. **ACTIONABLE before step 4** — the prompt should say what confidence
+means: not "am I certain", but "would a reasonable person reading these call
+them one job". A model hedging on a judgement it has actually made is a prompt
+problem, not a rule problem.
+
+### 11.4 Verdict
+
+The design works and the assumption holds. Two prompt-and-retry fixes belong
+before step 4, and neither changes the plan's shape.
+
+Cost: seven judgements, roughly a dollar of tokens. It found a brand split that
+would otherwise have hidden four roles indefinitely.

@@ -90,6 +90,41 @@ db.exec(`
     title      TEXT NOT NULL,
     first_seen TEXT NOT NULL
   );
+  /**
+   * Every judgement the system made, and what Mahi said it should have been.
+   *
+   * The substrate under every way this can improve. Few-shot needs examples,
+   * retrieval needs stored decisions, LoRA needs graded pairs, DPO needs
+   * chosen-against-rejected — all four are these rows. Nothing was recorded
+   * before this table, so no path was open at all.
+   *
+   * NOT merged with the gates table, though both record why something
+   * happened. A gate row is per-posting per-rule, deterministic and never
+   * wrong in the way that matters; a decision is one judgement, made by a
+   * model, that a human may overrule. Different lifetimes, different readers.
+   *
+   * Lives in the same out-of-repo database as contacts, and for the same
+   * reason: kind is open so contact and draft decisions land here too, and
+   * those name real people.
+   *
+   * correction_note is the valuable column. "Homedeal and Moving24 are
+   * separate brands" generalises to every multi-brand parent; the corrected
+   * partition generalises to nothing.
+   */
+  CREATE TABLE IF NOT EXISTS decisions (
+    id              TEXT PRIMARY KEY,
+    at              TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    subject         TEXT NOT NULL,
+    context         TEXT NOT NULL,
+    chose           TEXT NOT NULL,
+    reasoning       TEXT,
+    decider         TEXT NOT NULL,
+    corrected_at    TEXT,
+    corrected_to    TEXT,
+    correction_note TEXT
+  );
+  CREATE INDEX IF NOT EXISTS decisions_subject ON decisions(kind, subject);
   CREATE INDEX IF NOT EXISTS actor_calls_actor ON actor_calls(actor, at);
   CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
   CREATE INDEX IF NOT EXISTS jobs_seen  ON jobs(first_seen);
@@ -257,6 +292,77 @@ export const roleOf = (jobId: string): Role | null =>
   q<Role>(
     `SELECT r.* FROM roles r JOIN jobs j ON j.role_id = r.id WHERE j.id = ?`, jobId,
   )[0] ?? null;
+
+export type DecisionKind = 'group' | 'contact' | 'screen' | 'draft';
+
+export interface Decision {
+  id: string;
+  at: string;
+  kind: DecisionKind;
+  /** The thing judged: a role id, a job id. */
+  subject: string;
+  context: string;
+  chose: string;
+  reasoning: string | null;
+  /** The model that decided, or `key` when it fell back to the deterministic rule. */
+  decider: string;
+  corrected_at: string | null;
+  corrected_to: string | null;
+  correction_note: string | null;
+}
+
+export function recordDecision(d: {
+  kind: DecisionKind; subject: string; context: unknown; chose: unknown;
+  reasoning?: string; decider: string;
+}): string {
+  const id = `${d.kind}:${d.subject}:${Date.now().toString(36)}`;
+  db.prepare(
+    `INSERT INTO decisions (id, at, kind, subject, context, chose, reasoning, decider)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, new Date().toISOString(), d.kind, d.subject,
+        JSON.stringify(d.context), JSON.stringify(d.chose), d.reasoning ?? null, d.decider);
+  return id;
+}
+
+/**
+ * Record that a decision was wrong, and why.
+ *
+ * The note is required by the caller, not by the schema — a correction with no
+ * reason teaches nothing, and this table exists to teach.
+ */
+export function recordCorrection(id: string, correctedTo: unknown, note: string): void {
+  db.prepare(
+    'UPDATE decisions SET corrected_at = ?, corrected_to = ?, correction_note = ? WHERE id = ?',
+  ).run(new Date().toISOString(), JSON.stringify(correctedTo), note, id);
+}
+
+/**
+ * Corrections to put in front of the next judgement.
+ *
+ * Same subject prefix first — a role id is `company::role`, so a prefix match
+ * is "everything I have been corrected on at this company" — then the most
+ * recent others. This is the learning: retrieval, not training, working today
+ * on a hosted model with no GPU.
+ */
+export function correctionsFor(
+  kind: DecisionKind, subjectPrefix: string, recent = 3,
+): Decision[] {
+  const sameSubject = q<Decision>(
+    `SELECT * FROM decisions WHERE kind = ? AND corrected_at IS NOT NULL AND subject LIKE ?
+     ORDER BY corrected_at DESC`, kind, `${subjectPrefix}%`,
+  );
+  const seen = new Set(sameSubject.map((d) => d.id));
+  const others = q<Decision>(
+    `SELECT * FROM decisions WHERE kind = ? AND corrected_at IS NOT NULL
+     ORDER BY corrected_at DESC LIMIT ?`, kind, recent + sameSubject.length,
+  ).filter((d) => !seen.has(d.id)).slice(0, recent);
+  return [...sameSubject, ...others];
+}
+
+export const decisionsFor = (kind: DecisionKind, subject: string): Decision[] =>
+  q<Decision>(
+    'SELECT * FROM decisions WHERE kind = ? AND subject = ? ORDER BY at DESC', kind, subject,
+  );
 
 export function spentLast24h(): number {
   const since = new Date(Date.now() - 86_400_000).toISOString();
