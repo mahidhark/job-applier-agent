@@ -3,6 +3,7 @@
  *
  *   npm run roles              show every role and the listings under it
  *   npm run roles -- --backfill  group postings that predate grouping
+ *   npm run roles -- --judge     DRY RUN: what a model would group differently
  *
  * This exists because a group is a HYPOTHESIS. "AI Finance App" and "AI Neobank
  * App" at one company might be one job advertised twice or two teams with two
@@ -11,6 +12,8 @@
  */
 import { q, upsertRole, setRoleId, setState, postingsInRole, type Role } from './store/db.js';
 import { roleKey, roleCore, qualifierOf } from './roles/key.js';
+import { judgeCandidate, type CandidatePosting } from './roles/judge.js';
+import { loadConfig } from './config-file.js';
 
 const args = process.argv.slice(2);
 
@@ -111,5 +114,69 @@ function list(): void {
   console.log('    advertised again. If a group looks wrong, say so — the key is one file.\n');
 }
 
+/**
+ * Dry run: ask the judge, print the difference, write nothing.
+ *
+ * This is the gate the v2.0 plan is waiting on. Its central assumption —
+ * that the DESCRIPTIONS distinguish Homedeal from Moving24 where the titles
+ * cannot — is unverified. If they do not, the plan is wrong, and this is much
+ * cheaper than finding out after it is wired into the poll.
+ */
+async function dryRun(): Promise<void> {
+  const config = loadConfig();
+  const roles = q<Role>('SELECT * FROM roles ORDER BY company, role_key');
+  if (!roles.length) {
+    console.log('\n  No roles yet. Run `npm run roles -- --backfill` first.\n');
+    return;
+  }
+
+  console.log(`\n  DRY RUN — nothing is written.\n  judge: ${config.ai.tasks?.judge ?? config.ai.provider}\n`);
+  let agreed = 0, differed = 0;
+
+  for (const role of roles) {
+    const rows = q<{ id: string; title: string; raw: string }>(
+      `SELECT id, title, raw FROM jobs WHERE role_id = ? AND state != 'rejected' ORDER BY id`,
+      role.id,
+    );
+    if (rows.length < 2) continue;
+
+    const postings: CandidatePosting[] = rows.map((r) => ({
+      jobId: r.id,
+      title: r.title,
+      qualifier: qualifierOf(r.title),
+      description: (JSON.parse(r.raw) as { description?: string }).description ?? '',
+    }));
+
+    process.stdout.write(`  ${role.company} — ${role.title} (${postings.length}) ... `);
+    let judged;
+    try {
+      judged = await judgeCandidate(role.company, role.id, postings, config.ai);
+    } catch (err) {
+      console.log(`JUDGE FAILED: ${(err as Error).message.slice(0, 90)}`);
+      continue;
+    }
+
+    const same = judged.groups.length === 1;
+    if (same) { agreed++; console.log('one role — agrees with the key'); }
+    else { differed++; console.log(`SPLITS INTO ${judged.groups.length}`); }
+
+    for (const g of judged.groups) {
+      const quals = g.jobIds
+        .map((id) => postings.find((p) => p.jobId === id))
+        .map((p) => qualifierOf(p?.title ?? '') || '(none)');
+      console.log(`      ${g.confident ? '✓' : '?'} ${g.roleTitle}  [${quals.join(', ')}]`);
+      console.log(`        ${g.reasoning.slice(0, 150)}`);
+    }
+    if (judged.priorCorrections) {
+      console.log(`      (informed by ${judged.priorCorrections} prior correction(s))`);
+    }
+    console.log('');
+  }
+
+  console.log(`  ${agreed} group(s) the judge would keep, ${differed} it would split.`);
+  console.log('  Nothing was written. Compare against `npm run roles` before wiring this in.\n');
+}
+
 if (args.includes('--backfill')) backfill();
+else if (args.includes('--judge')) await dryRun();
 else list();
