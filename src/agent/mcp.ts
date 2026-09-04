@@ -1,48 +1,54 @@
 /**
- * Apify's MCP server, as Mastra tools.
+ * MCP servers, as Mastra tools.
  *
- * The agent gets Apify's own tools rather than wrappers I wrote, which is the
- * point: it can discover and call actors at runtime instead of being limited
- * to a fixed set someone anticipated.
- *
- * That freedom has a bill attached. `call-actor` will run whatever actor the
- * model names, at whatever that actor charges, so the spend guard lives in the
- * run loop (src/agent/run.ts) rather than in the tool definitions — there is
- * no per-tool cost to declare when the tool is "call anything".
+ * Every connection comes from config/connections.json, so adding a server is a
+ * config change and credentials never live in the repo. A server whose token
+ * is missing is skipped with a warning rather than throwing — one unconfigured
+ * integration should not stop the others.
  */
 import { MCPClient } from '@mastra/mcp';
-import { APIFY_TOKEN } from '../config.js';
-
-const ENDPOINT = process.env.APIFY_MCP_URL ?? 'https://mcp.apify.com/';
+import { resolveConnections, type ConnectionStatus } from './connections.js';
 
 let client: MCPClient | null = null;
+let lastStatus: ConnectionStatus[] = [];
 
-export function apifyMcpClient(): MCPClient {
+export function connectionStatus(): ConnectionStatus[] {
+  return lastStatus;
+}
+
+export function mcpClient(profile?: string): MCPClient {
   if (client) return client;
-  if (!APIFY_TOKEN) throw new Error('APIFY_TOKEN is not set — the agent needs it for Apify MCP');
 
-  client = new MCPClient({
-    id: 'apify',
-    servers: {
-      apify: {
-        url: new URL(ENDPOINT),
-        requestInit: { headers: { Authorization: `Bearer ${APIFY_TOKEN}` } },
-      },
-    },
-  });
+  const { ready, status } = resolveConnections(profile);
+  lastStatus = status;
+
+  for (const s of status) {
+    if (!s.ready && s.enabled) console.warn(`  ! mcp ${s.name}: ${s.reason}`);
+  }
+  if (!ready.length) {
+    throw new Error(
+      'no MCP server is reachable. ' +
+      status.map((s) => `${s.name}: ${s.reason}`).join('; '),
+    );
+  }
+
+  const servers: Record<string, { url: URL; requestInit: { headers: Record<string, string> } }> = {};
+  for (const s of ready) servers[s.name] = { url: s.url, requestInit: { headers: s.headers } };
+
+  client = new MCPClient({ id: 'job-applier-agent', servers: servers as never });
   return client;
 }
 
 /**
- * Every tool the Apify MCP server exposes, namespaced, in Mastra's shape.
+ * Every tool the connected servers expose, namespaced by server.
  *
- * `listTools()` flattens across servers with an `apify_` prefix. That prefix
- * matters for a small model: it has to reproduce the name exactly, and a long
- * namespaced name is one more thing to get wrong. The run records tool-name
- * errors for exactly this reason.
+ * Fetched at runtime rather than declared, which is the point — the agent gets
+ * whatever the servers currently offer. What they offer is itself configurable
+ * through the tool profile, because a large generic surface and a small typed
+ * one are very different problems for a small model.
  */
-export async function apifyTools(): Promise<Record<string, unknown>> {
-  return (await apifyMcpClient().listTools()) as Record<string, unknown>;
+export async function mcpTools(profile?: string): Promise<Record<string, unknown>> {
+  return (await mcpClient(profile).listTools()) as Record<string, unknown>;
 }
 
 export async function closeMcp(): Promise<void> {

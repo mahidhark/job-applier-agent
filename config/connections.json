@@ -1,0 +1,46 @@
+{
+  "$comment": "MCP servers and the credentials they need. This file is committed to a public repo, so it holds the NAME of an environment variable, never a value. Add a server here and the agent can reach it; nothing else changes.",
+
+  "servers": {
+    "apify": {
+      "enabled": true,
+      "kind": "http",
+      "url": "https://mcp.apify.com/",
+      "auth": { "type": "bearer", "tokenEnv": "APIFY_TOKEN" },
+      "toolProfile": "narrow",
+      "$toolProfileNote": "Which tools this server exposes. See toolProfiles below."
+    },
+
+    "gmail": {
+      "enabled": false,
+      "kind": "http",
+      "url": "https://mcp.example.com/gmail",
+      "auth": { "type": "bearer", "tokenEnv": "GMAIL_MCP_TOKEN" },
+      "toolProfile": "all",
+      "$note": "Placeholder. Email is a channel worth testing against LinkedIn, but it is not wired yet and nothing sends."
+    }
+  },
+
+  "toolProfiles": {
+    "$comment": "Apify's MCP endpoint takes a ?tools= parameter, so the size and shape of the tool surface is a variable rather than a fixture. This matters most for small models: a 3B model must reproduce a namespaced tool name exactly and fit a generic call-actor schema in its context. Switching profile is the cheapest way to find out whether a failure is the model or the surface.",
+
+    "narrow": {
+      "description": "Named actors with typed schemas. One call per intent, no store search. Start here for a small model.",
+      "tools": [
+        "harvestapi/linkedin-company",
+        "harvestapi/linkedin-profile-search",
+        "harvestapi/linkedin-profile-posts"
+      ]
+    },
+
+    "discovery": {
+      "description": "The agent searches the Apify store itself and reads an actor's schema before calling it. Maximum freedom, three round trips before anything useful, large generic schema.",
+      "tools": ["actors", "docs"]
+    },
+
+    "all": {
+      "description": "Whatever the server exposes by default.",
+      "tools": []
+    }
+  }
+}

@@ -16,15 +16,17 @@
 import { Agent } from '@mastra/core/agent';
 import type { AiConfig, ProviderName } from '../ai/index.js';
 import { agentModel, modelLabel } from './model.js';
-import { apifyTools } from './mcp.js';
+import { mcpTools } from './mcp.js';
 
 export const GOAL_SYSTEM = `You find the right person to approach about a job opening, and one true thing to say to them.
 
 Someone is applying for this role. What you decide determines who they message, so a confident wrong answer costs them a real opportunity.
 
-YOU HAVE APIFY'S TOOL SURFACE
+YOUR TOOLS
 
-You can search Apify's store for actors, read what an actor does and what input it takes, and run one. Nothing is pre-wired for you. If you need LinkedIn company data, profiles, or someone's recent posts, find the actor that does it and call it. Read an actor's input schema before running it rather than guessing at field names.
+Use the tools you have been given. Read a tool's input schema before calling it rather than guessing at field names, and call a tool by its exact name.
+
+If you have been given tools for searching a marketplace of scrapers rather than named data tools, then finding the right scraper is part of the job: search, read what it takes as input, then run it.
 
 WHAT DONE LOOKS LIKE
 
@@ -56,10 +58,12 @@ WHY: <why this person and not the others>`;
 export interface EnrichAgentOptions {
   config: AiConfig;
   provider?: ProviderName;
+  /** Forces a tool profile, so one goal can be repeated across tool surfaces. */
+  toolProfile?: string;
 }
 
-export async function buildEnrichAgent({ config, provider }: EnrichAgentOptions) {
-  const tools = await apifyTools();
+export async function buildEnrichAgent({ config, provider, toolProfile }: EnrichAgentOptions) {
+  const tools = await mcpTools(toolProfile);
 
   const agent = new Agent({
     id: 'enrich',

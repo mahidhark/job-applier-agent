@@ -175,3 +175,56 @@ Files
   src/enrich/tools.test.ts                     (new, 6 tests on the grounding check)
 
 Tests: 21 -> 27. npm run typecheck clean.
+
+
+2026-09-04 (cont.) — connection scaffolding, and the tool surface as a variable
+--------------------------------------------------------------------------------
+Mahi asked whether the Mastra orchestrator loads its tool list at runtime. It
+does — MCPClient.listTools() is called when the agent is built and nothing is
+hardcoded. But checking Apify's docs turned up something that matters more for
+the SLM hypothesis than anything else built so far.
+
+The Apify MCP endpoint takes a `tools=` query parameter:
+
+  https://mcp.apify.com/                                        discovery tools
+  https://mcp.apify.com/?tools=actors,docs                      tool groups
+  https://mcp.apify.com/?tools=harvestapi/linkedin-company,...  named actors
+
+So the tool surface is a variable, not a fixture. The difference for a 3B model
+is large: with `discovery` it must run search-actors, then fetch-actor-details,
+then call-actor with a generic schema — three round trips at ~30s each, and a
+big schema to hold. With `narrow` it calls one named tool with a small typed
+schema. If qwen fails, that distinction decides whether the finding is "small
+models cannot hold a goal" or "the surface was too big", and those have very
+different consequences.
+
+config/connections.json — MCP servers and the credentials they need. The file
+is committed to a public repo so it names the ENV VAR, never the value.
+Resolution happens at startup; a missing token disables that server with a
+warning instead of throwing mid-run. Keys beginning with `$` are documentation
+(JSON has no comments) and are stripped before anything iterates — the first
+version of the probe crashed because `$comment` was read as a tool profile.
+
+Three tool profiles ship: narrow, discovery, all. `npm run agent -- --tools
+discovery` repeats the same goal on a different surface, which is the cheapest
+experiment available and should be run before drawing any conclusion about the
+model.
+
+npm run connections shows what is wired, what each profile would give the
+agent, and — once a token exists — connects and lists the tools the servers
+actually expose, so a profile naming an actor that no longer exists fails there
+rather than mid-run.
+
+Still not run. APIFY_TOKEN remains unset.
+
+Files
+  config/connections.json               (new)
+  src/agent/connections.ts              (new)
+  src/agent/connections-probe.ts        (new)
+  src/agent/connections.test.ts         (new, 6 tests)
+  src/agent/mcp.ts                      now config-driven, multi-server
+  src/agent/enrich-agent.ts             toolProfile passthrough; prompt no longer
+                                        assumes the Apify store is available
+  src/agent/run.ts                      --tools flag
+
+Tests: 27 -> 33. npm run typecheck clean.

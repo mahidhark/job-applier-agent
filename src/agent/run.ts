@@ -29,6 +29,7 @@ const val = (f: string) => { const i = args.indexOf(f); return i >= 0 ? args[i +
 const jobId = args.find((a) => !a.startsWith('--') && !['ollama', 'anthropic'].includes(a));
 
 const MAX_STEPS = Number(val('--max-steps') ?? 10);
+const TOOL_PROFILE = val('--tools');
 
 export interface RunRecord {
   provider: string;
@@ -65,7 +66,10 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
   let transcript = '';
 
   try {
-    const { agent, label, toolNames } = await buildEnrichAgent({ config: config.ai, provider });
+    const { agent, label, toolNames } = await buildEnrichAgent({
+      config: config.ai, provider,
+      ...(TOOL_PROFILE ? { toolProfile: TOOL_PROFILE } : {}),
+    });
     const known = new Set(toolNames);
 
     const res = await agent.generate(enrichGoal(job), {
