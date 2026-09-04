@@ -481,3 +481,80 @@ before step 4, and neither changes the plan's shape.
 
 Cost: seven judgements, roughly a dollar of tokens. It found a brand split that
 would otherwise have hidden four roles indefinitely.
+
+---
+
+## 12. Second dry run — the fixes worked, and exposed a design error
+
+Both §11.3 fixes landed. The pathological outcomes are gone:
+
+| group | first run | after the fixes |
+|---|---|---|
+| Technical Product Lead (8) | **8 singletons** — malformed partition | **2** |
+| Product Manager (5) | **5 singletons** — hedged | **2** |
+
+The retry recovered the malformed partition on the first attempt, and defining
+confidence as *"would a reasonable person call these one job"* rather than *"am
+I certain"* stopped the hedging. Every split is now marked confident.
+
+### 12.1 But the judgements contradict each other
+
+Bjak's six role groups, by how many listings carry the `App` suffix that marks
+the KIRA brand:
+
+| role | App | plain | judge said | consistent |
+|---|---|---|---|---|
+| product engineer | 0 | 4 | one role | ✓ |
+| product owner, technical | 0 | 4 | one role | ✓ |
+| technical product lead | 4 | 4 | splits on App | ✓ |
+| technical product manager | 4 | 4 | splits on App | ✓ |
+| **product lead** | **4** | **3** | **kept as one** | **✗** |
+| **product manager** | **2** | **3** | splits, but both groups mix App and plain | **✗** |
+
+Four groups contain both brands. Two were split on the brand boundary and two
+were not — and `product manager`'s split puts `AI Finance` and `AI Investing`
+(plain) with `AI Stockbroking App`, which is the opposite of what the same
+model concluded twice elsewhere, confidently, minutes earlier.
+
+### 12.2 The cause is the unit of judgement, not the model
+
+**Which brands a company runs is a fact about the company.** The design asks it
+once per candidate group, so Bjak's taxonomy gets derived six independent times
+from six overlapping slices of evidence, and lands differently. The model is
+not being inconsistent so much as being asked six unrelated questions and
+answering each locally.
+
+This is the same error shape as the ones already fixed today: reading `headline`
+per source instead of normalising once; inferring actor health from repeated
+emptiness instead of reading the field that said so. **A fact that belongs in
+one place, derived in many.**
+
+### 12.3 Consequence: step 4 should not proceed as written
+
+Wiring a judge into `poll.ts` that is right on half the groups that matter would
+bake the inconsistency into the store, and `variant` rows are exactly the ones
+nobody looks at again.
+
+**Proposed v2.1 shape**, for ratification rather than implementation:
+
+1. A **company pass** first: given every posting at a company, establish its
+   brands or business units — once, recorded on the company, with reasoning.
+2. Grouping then decides membership *within* a known taxonomy, which is a much
+   smaller judgement and a much more stable one.
+3. The taxonomy is a `decision` like any other, so it is correctable and
+   retrievable, and one correction fixes every group at that company instead of
+   one.
+
+This also makes the correction loop cheaper in exactly the place it matters:
+telling the system "BJAK and KIRA are different brands" once should fix six
+groups, not one.
+
+### 12.4 What is worth keeping from steps 1-3
+
+Everything. The substrate, the retry, the partition guard, split-on-unsure and
+the confidence definition are all orthogonal to where the taxonomy is derived.
+Only the unit of the question changes.
+
+Cost across both dry runs: roughly two dollars of tokens, which bought the
+discovery that Bjak is two brands and the evidence that the current unit of
+judgement is wrong. Both were invisible before.

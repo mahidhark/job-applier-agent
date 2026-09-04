@@ -1011,3 +1011,67 @@ Files
 Tests: 125 -> 150. npm run typecheck clean.
 Spend: about a dollar of Opus tokens for seven judgements. It found a brand
 split that would otherwise have hidden four roles indefinitely.
+
+
+2026-09-04  The judge's fixes worked, and showed I asked the wrong question
+
+Two fixes from the first dry run, then re-ran it.
+
+  Technical Product Lead (8):  8 singletons -> 2.  The retry recovered a
+  malformed partition on the first attempt.
+
+  Product Manager (5):  5 singletons -> 2.  Defining confidence as "would a
+  reasonable person call these one job" rather than "am I certain" stopped the
+  hedging. Every split is now marked confident.
+
+Both pathological outcomes gone, and the second run cost the same as the first.
+
+THEN READING THEM TOGETHER SHOWED THE REAL PROBLEM. Bjak's six groups, by how
+many listings carry the "App" suffix that marks the KIRA brand:
+
+  product engineer            0 App / 4 plain   one role        consistent
+  product owner, technical    0 App / 4 plain   one role        consistent
+  technical product lead      4 App / 4 plain   splits on App   consistent
+  technical product manager   4 App / 4 plain   splits on App   consistent
+  product lead                4 App / 3 plain   ONE ROLE        inconsistent
+  product manager             2 App / 3 plain   splits, but both sides mix
+
+Four groups contain both brands. Two were split on the brand boundary and two
+were not. Product manager's split puts two plain qualifiers with an App one,
+which is the opposite of what the same model concluded confidently twice,
+minutes earlier.
+
+The cause is not the model. WHICH BRANDS A COMPANY RUNS IS A FACT ABOUT THE
+COMPANY, and I ask it once per candidate group — so Bjak's taxonomy gets
+derived six independent times from six overlapping slices and lands
+differently. Six unrelated questions, each answered locally.
+
+Which is the same error shape as everything else this week: reading `headline`
+per source instead of normalising once, and inferring actor health from
+repeated emptiness instead of reading the field that said so. A fact that
+belongs in one place, derived in many.
+
+So step 4 does not proceed as written. Wiring a judge into poll that is right
+on half the groups that matter would bake the inconsistency into the store, and
+variant rows are precisely the ones nobody looks at again.
+
+Proposed v2.1, for ratification not implementation: a company pass first that
+establishes the brands once and records them as a decision; grouping then
+decides membership within a known taxonomy, which is a smaller and steadier
+judgement. It also makes correction cheaper where it counts — telling the
+system "BJAK and KIRA are different brands" should fix six groups, not one.
+
+Everything from steps 1-3 survives. The substrate, the retry, the partition
+guard, split-on-unsure and the confidence definition are all orthogonal to
+where the taxonomy is derived. Only the unit of the question changes.
+
+Files
+  src/roles/judge.ts       retry once on a malformed partition; confidence
+                           defined; attempts recorded
+  src/roles/judge.test.ts  +4 tests
+  docs/role-grouping-plan-v2.md  §12
+
+Tests: 150 -> 154. npm run typecheck clean.
+Spend: about two dollars of tokens across both dry runs. It bought the
+discovery that Bjak is two brands, and the evidence that the unit of judgement
+is wrong. Both were invisible before.
