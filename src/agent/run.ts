@@ -21,6 +21,7 @@ import { q, recordContact } from '../store/db.js';
 import type { ProviderName } from '../ai/index.js';
 import type { JobPosting } from '../sources/types.js';
 import { buildEnrichAgent, enrichGoal } from './enrich-agent.js';
+import { checkGrounding, type Verdict } from './grounding.js';
 import { closeMcp } from './mcp.js';
 
 const args = process.argv.slice(2);
@@ -71,7 +72,10 @@ export interface RunRecord {
    *  broken, not that the model invented something. */
   transcriptChars: number;
   parsed: Record<string, string> | null;
-  grounded: boolean | null;
+  grounded: Verdict | null;
+  groundingReason?: string;
+  /** Tool output, truncated, so a verdict can be re-checked offline. */
+  transcriptSample?: string;
   error?: string;
 }
 
@@ -158,17 +162,18 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
     const finalText = String((res as { text?: string }).text ?? '');
     const parsed = parseFinal(finalText);
 
-    // Same grounding rule as everywhere else: an observation is only real if
-    // its quoted source appears in something a tool actually returned.
-    let grounded: boolean | null = null;
+    // Same rule as everywhere else in this system: an observation is only
+    // real if its cited text appears in something a tool actually returned.
+    let grounded: Verdict | null = null;
+    let groundingReason: string | undefined;
     if (parsed) {
-      const src = parsed['SOURCE'] ?? 'NONE';
-      const obs = parsed['OBSERVATION'] ?? 'NONE';
-      grounded = obs === 'NONE' || (src !== 'NONE' && src.length >= 20 && flat(transcript).includes(flat(src)));
+      const g = checkGrounding(parsed['OBSERVATION'] ?? '', parsed['SOURCE'] ?? '', transcript);
+      grounded = g.verdict;
+      groundingReason = g.reason;
       if (parsed['CONTACT']) {
         recordContact(job.id, parsed['CONTACT'], parsed['TITLE'] ?? null,
                       parsed['PROFILE'] ?? null, `agent:${label}`,
-                      grounded ? (obs === 'NONE' ? null : obs) : null);
+                      g.verdict === 'grounded' ? (parsed['OBSERVATION'] ?? null) : null);
       }
     }
 
@@ -180,7 +185,9 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
     return {
       provider: label, jobId: job.id, ok: Boolean(parsed), wallMs: Date.now() - started,
       steps: toolCalls.length, toolCalls, unknownTools, stopReason, finalText,
-      rawFirstStep, transcriptChars: transcript.length, parsed, grounded,
+      rawFirstStep, transcriptChars: transcript.length,
+      transcriptSample: transcript.slice(0, 20000), parsed, grounded,
+      ...(groundingReason ? { groundingReason } : {}),
     };
   } catch (err) {
     return {
@@ -208,11 +215,12 @@ function report(r: RunRecord): void {
     console.log(`    → ${r.parsed['CONTACT']}${r.parsed['TITLE'] ? ` — ${r.parsed['TITLE']}` : ''}`);
     console.log(`      ${r.parsed['PROFILE']}`);
     console.log(`      observation: ${r.parsed['OBSERVATION'] ?? 'NONE'}`);
-    const g = r.grounded === null ? 'n/a'
-      : r.grounded ? 'yes'
-      : r.transcriptChars === 0 ? 'UNCHECKABLE — no tool output was captured'
-      : 'NO — source not in any tool output';
-    console.log(`      grounded: ${g}   (${r.transcriptChars} chars of tool output seen)`);
+    const label = {
+      grounded: 'yes', not_found: 'NO — cited text is in no tool output',
+      uncheckable: 'UNCHECKABLE — harness captured no tool output',
+      no_claim: 'n/a — no observation claimed',
+    }[r.grounded ?? 'no_claim'];
+    console.log(`      grounded: ${label}   (${r.transcriptChars} chars of tool output seen)`);
   } else if (r.finalText) {
     console.log(`    final text did not match the required block:\n      ${r.finalText.slice(0, 300).replace(/\n/g, '\n      ')}`);
   }

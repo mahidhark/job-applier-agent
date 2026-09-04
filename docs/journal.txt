@@ -283,3 +283,66 @@ Files
   src/agent/run.ts   arg parsing, step accounting, transcript capture, stop reasons
 
 Tests: 33, unchanged. npm run typecheck clean.
+
+
+2026-09-04 (cont.) — the qwen "failure" was four stacked infrastructure faults
+-------------------------------------------------------------------------------
+qwen2.5:3b made zero tool calls in 308s and then timed out. That reads as a
+capability failure and would have been written up as one. It was not. Four
+separate things, none of them the model:
+
+  1. Prompt size. The narrow tool profile is 7 tools at ~5,800 chars of JSON
+     schema each = 40,750 chars. Plus system (2,064) and job description
+     (3,000), the first request is ~13,090 tokens. Ollama's default num_ctx is
+     4,096, and it truncates silently. The model never saw the goal.
+
+  2. OLLAMA_NUM_PARALLEL=4 on the shared daemon. Ollama reserves KV cache per
+     parallel slot, so a 16k context reserves four slots' worth — roughly
+     9.6GB at f16 on a box with under 4GB free. The model could not have
+     loaded at that context no matter how the prompt was sized.
+
+  3. f16 KV cache. At 16k and one slot that is still ~2,416MB, larger than the
+     model weights themselves. Quantising the KV cache to q4_0 takes it to
+     ~604MB. The KV cache, not the weights, is the binding constraint — which
+     inverts the obvious lever: picking a smaller model quant barely helps.
+
+  4. The daemon is shared. /root/whatsscale-ai reaches 11434 from src/agent.ts,
+     src/tools/retrieve_knowledge.ts and src/server.ts, and NUM_PARALLEL=4 is a
+     deliberate override, not a default. Retuning it for this experiment would
+     have serialised another product's inference.
+
+Resolution, Mahi's call between three options: a second Ollama for this repo
+alone, on 11435, with its own model store and environment. The shared daemon is
+untouched and still serves its four models. ops/ollama-agent.config.cjs runs it
+under pm2; ops/README.md records why, and the two things that would silently
+reintroduce the failure (pointing baseUrl at 11434, or relying on num_ctx being
+passed per request through the AI SDK rather than baked into the model).
+
+Model: unsloth/Qwen3.5-4B-GGUF UD-Q4_K_XL. Unsloth was Mahi's suggestion for
+tokens/sec. Two corrections came out of checking it rather than assuming:
+Unsloth is not CUDA-only — its docs state NVIDIA, AMD, Intel and CPU with a
+Vulkan backend — and its real value here is not speed but a newer, better model
+at the same footprint, with Dynamic quants that hold accuracy better per byte.
+On a memory-bound box, accuracy per byte is the metric that matters.
+
+`ollama pull hf.co/...` fails repeatedly with "context deadline exceeded"
+against HuggingFace on this connection. A direct resumable curl works and is
+what ops/README.md documents.
+
+Budget with the isolated instance: ~2,500MB weights + ~604MB KV = ~3.1GB
+against ~3,983MB free. It fits, with roughly 880MB of headroom, and that
+headroom should be watched during the first long run — an OOM would look
+exactly like the model failing, which is the mistake this whole entry is about.
+
+Files
+  ops/ollama-agent.config.cjs            (new)
+  ops/Modelfile.qwen3.5-4b-agent         (new)
+  ops/README.md                          (new)
+  config/default.json                    ai.ollama -> 11435, numCtx 16384
+  docs/vision.md                         (new, DRAFT — not ratified)
+  docs/roadmap.md                        (new, DRAFT — not ratified)
+  docs/sprint-01-plan.md                 (new, DRAFT — 10-dimension stress test in §6)
+  src/agent/grounding.ts + test          (new, 9 tests)
+  src/agent/run.ts                       grounding extracted, transcript sampled
+
+Tests: 33 -> 42. npm run typecheck clean.

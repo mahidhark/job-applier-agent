@@ -1,0 +1,23 @@
+# Qwen3.5-4B (Unsloth Dynamic Q4_K_XL) for the enrich agent.
+#
+# num_ctx is baked in rather than passed per request. The AI SDK path
+# (ollama-ai-provider-v2 -> Mastra) does not reliably surface Ollama's
+# `options.num_ctx`, and the default of 4096 silently truncates: the first
+# real run sent ~13,090 tokens into a 4,096 window and the model emitted
+# nothing for 308 seconds. Baking it into the model removes that dependency.
+#
+# 16384 is sized for the whole conversation, not the opening prompt. Tool
+# results accumulate — a Claude run on the same goal gathered 127,293
+# characters of tool output — so mid-run overflow is the likelier failure.
+#
+# Recreate with:
+#   OLLAMA_HOST=127.0.0.1:11435 ollama create qwen3.5-4b-agent \
+#     -f ops/Modelfile.qwen3.5-4b-agent
+
+FROM /root/.ollama-agent/gguf/Qwen3.5-4B-UD-Q4_K_XL.gguf
+
+PARAMETER num_ctx 16384
+PARAMETER temperature 0
+PARAMETER top_p 0.9
+# Enough for a tool call plus the final block; not enough to ramble.
+PARAMETER num_predict 1024

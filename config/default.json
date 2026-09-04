@@ -150,9 +150,11 @@
       "effort": "medium"
     },
     "ollama": {
-      "baseUrl": "http://localhost:11434",
-      "model": "qwen2.5:3b",
-      "timeoutMs": 900000
+      "baseUrl": "http://127.0.0.1:11435",
+      "model": "qwen3.5-4b-agent",
+      "timeoutMs": 900000,
+      "numCtx": 16384,
+      "$note": "Port 11435 is this repo's own Ollama (ops/ollama-agent.config.cjs), not the shared 11434 daemon whatsscale-ai uses. The model is created locally from a Modelfile that bakes num_ctx; see ops/README.md. Pointing this at 11434 reproduces the original failure."
     }
   },
   "queue": {
