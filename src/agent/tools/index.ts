@@ -31,8 +31,8 @@
  */
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
-import { recordContact, recordSpend } from '../../store/db.js';
-import { runActorViaMcp } from '../../enrich/mcp.js';
+import { recordContact, recordSpend, recordActorCall, actorHealth } from '../../store/db.js';
+import { runActorViaMcp } from '../apify.js';
 import { checkGrounding } from '../grounding.js';
 
 const COMPANY_SEARCH = 'harvestapi/linkedin-company';
@@ -77,13 +77,22 @@ export const TOOL_COST_USD: Record<string, number> = {
   find_employees_at_company: 0.05,
   read_recent_posts: 0.02,
   record_contact: 0,
+  record_no_contact: 0,
 };
+
+/** What the agent committed to. `null` name means it committed to finding nobody. */
+export interface EnrichOutcome {
+  found: boolean;
+  contact: EnrichResult | null;
+  /** Why nobody, when found is false. */
+  reason: string;
+}
 
 export interface EnrichToolContext {
   jobId: string;
   /** Everything the tools have returned this run; record_contact cites against it. */
   transcript: { text: string };
-  onFinish: (r: EnrichResult) => void;
+  onFinish: (o: EnrichOutcome) => void;
   /** Returns false when the run has spent its budget. */
   charge: (tool: string) => boolean;
 }
@@ -115,6 +124,7 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
       if (!ctx.charge('resolve_company')) return refuse('resolve_company');
       const rows = (await runActorViaMcp(COMPANY_SEARCH, { searches: [name] }, 5)) as CompanyHit[];
       recordSpend(COMPANY_SEARCH, TOOL_COST_USD['resolve_company']!, ctx.jobId);
+      recordActorCall(COMPANY_SEARCH, rows.length);
       if (!rows.length) return remember(`No company on LinkedIn matched "${name}".`);
       return remember(rows.map((c) =>
         [`${c.name ?? '(no name)'} — ${c.linkedinUrl ?? 'no url'}`,
@@ -145,13 +155,23 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
         maxItems: 10,
       }, 10)) as ShortProfile[];
       recordSpend(PROFILE_SEARCH, TOOL_COST_USD['find_people_at_company']!, ctx.jobId);
+      recordActorCall(PROFILE_SEARCH, rows.length);
 
       if (!rows.length) {
+        // The model cannot tell an outage from a real empty result, and it does
+        // not need to — the right move is the same either way. But when we can
+        // measure that a source is degraded, saying so is information it
+        // otherwise has no way to obtain.
+        const degraded = actorHealth().find((h) => h.actor === PROFILE_SEARCH)?.degraded;
         return remember(
-          'No profiles returned by this source. That can mean the company has nobody ' +
-          'matching, or that this source is having trouble — it cannot tell you which. ' +
-          'find_employees_at_company reads the same data from a different source; if you ' +
-          'have not tried it for this company, it is worth one call.',
+          'No profiles returned by this source. ' +
+          (degraded
+            ? 'This source has returned nothing on every recent call, so it is probably ' +
+              'having trouble rather than telling you the company is empty. '
+            : 'That can mean the company has nobody matching, or that this source is ' +
+              'struggling — one call cannot tell you which. ') +
+          'find_employees_at_company reads the same data from an independent source; ' +
+          'if you have not tried it for this company, it is worth one call.',
         );
       }
       return remember(renderProfiles(rows));
@@ -190,6 +210,7 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
         maxItems: 10,
       }, 10)) as ShortProfile[];
       recordSpend(COMPANY_EMPLOYEES, TOOL_COST_USD['find_employees_at_company']!, ctx.jobId);
+      recordActorCall(COMPANY_EMPLOYEES, rows.length);
 
       if (!rows.length) {
         return remember(
@@ -213,6 +234,7 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
         targetUrls: [profileUrl], maxPosts: 5, postedLimit: 'year',
       }, 5)) as Post[];
       recordSpend(PROFILE_POSTS, TOOL_COST_USD['read_recent_posts']!, ctx.jobId);
+      recordActorCall(PROFILE_POSTS, rows.length);
       if (!rows.length) {
         return remember('No recent posts. This person is not active on LinkedIn.');
       }
@@ -259,8 +281,40 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
       };
       recordContact(ctx.jobId, result.name, result.title || null, result.profileUrl || null,
                     'enrich-agent', observation || null);
-      ctx.onFinish(result);
+      ctx.onFinish({ found: true, contact: result, reason: '' });
       return 'Recorded. You are done — reply with a one-line summary and call no more tools.';
+    },
+  });
+
+  /**
+   * Committing to "nobody" is an ANSWER, not a failure to answer.
+   *
+   * The runner previously inferred this from free text and labelled it
+   * `no_block`, i.e. failure — while the prompt explicitly told the model not
+   * to call record_contact when it found nobody. Correct behaviour scored as
+   * failure, the same class of error as a step ceiling being reported as "no
+   * usable answer".
+   *
+   * Making it an explicit commitment also makes it scoreable: on a case whose
+   * correct answer is that no contact exists, calling this is the pass
+   * condition and committing a person is the failure.
+   */
+  const record_no_contact = createTool({
+    id: 'record_no_contact',
+    description:
+      'Finish by committing that no suitable contact could be found. Use this when you have ' +
+      'searched properly — including the second source — and there is genuinely nobody to ' +
+      'approach, or the sources could not answer. This is a valid answer, not a failure. ' +
+      'Never guess a person instead of calling this.',
+    inputSchema: z.object({
+      reason: z.string().describe(
+        'What you tried and why you concluded nobody is reachable. Say plainly if a source ' +
+        'returned nothing rather than the company having nobody.',
+      ),
+    }),
+    execute: async ({ reason }) => {
+      ctx.onFinish({ found: false, contact: null, reason });
+      return 'Recorded that no contact was found. You are done — reply with one line and call no more tools.';
     },
   });
 
@@ -270,5 +324,6 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
     find_employees_at_company,
     read_recent_posts,
     record_contact,
+    record_no_contact,
   };
 }

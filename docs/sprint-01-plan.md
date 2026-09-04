@@ -266,12 +266,13 @@ are listed first in §7.11.
 
 - 10.a: ten cases catches large regressions and misses subtle ones. Accepted;
   growing the set is cheap once the runner exists.
-- 10.b: **[Mahi-verify]** — the case set encodes your judgment of who the right
-  contact is. If that judgment is systematically off, every score inherits it
-  and the agent optimises toward the wrong target. Loop 2 (real reply data) is
-  the only correction, and it is months away. Worth deciding whether ten cases
-  labelled by one person is enough to steer on, or whether the first cases
-  should be ones where a reply actually happened.
+- 10.b: the case set encodes Mahi's judgment of who the right contact is, and
+  every score inherits it. **RESOLVED 2026-09-04 (Mahi): start anyway.** Perfect
+  ground truth is not available and waiting for reply data means waiting months
+  to measure anything at all. His judgment is the best signal available today.
+  Loop 2 corrects it when outcomes accumulate, which is why §2.4 ships in this
+  sprint rather than later, and why the tune/held-out split exists — it at least
+  prevents fitting the labels rather than the job.
 
 ### 7.11 Net v2.0 changes
 

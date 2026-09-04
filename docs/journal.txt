@@ -418,3 +418,62 @@ Files
   src/enrich/               only mcp.ts survives
 
 Tests: 42 -> 29. npm run typecheck clean.
+
+
+2026-09-04 (cont.) — Sprint 1 §2.5, and three bugs found by looking
+---------------------------------------------------------------------
+Mahi resolved the open [Mahi-verify] on the case set: start anyway. Perfect
+ground truth is not available and waiting for reply data means waiting months
+to measure anything. His judgement is the best signal today; Loop 2 corrects it
+when outcomes accumulate, which is why outcome capture ships this sprint and
+why the tune/held-out split exists.
+
+record_no_contact. Committing to "nobody" is now an explicit answer rather than
+something inferred from free text. The runner previously labelled it `no_block`
+— failure — while the prompt told the model not to call record_contact in
+exactly that case. Correct behaviour scored as failure. It also makes the
+`nobody_findable` cases scoreable: calling it is the pass, committing a person
+is the fail.
+
+Actor liveness. Every actor call now records its row count. Three consecutive
+empties across different companies marks a source degraded; one or two does not,
+because companies genuinely have nobody matching a title filter. An errored call
+is excluded entirely — it tells you nothing about whether the source has data.
+When a source IS measurably degraded the tool says so to the model rather than
+deciding for it: "this source has returned nothing on every recent call, so it
+is probably having trouble rather than telling you the company is empty."
+
+That last part is a correction Mahi pushed for twice. An earlier version retried
+the second source automatically. The justification — that the model cannot tell
+an outage from a real empty result — was wrong, because the right action is the
+same either way, so the decision never needed the diagnosis. What the model
+lacked was information, and the fix for missing information is to supply it.
+
+Three bugs found while checking, none of them planned work:
+
+  1. TWO ORPHANED PROCESSES were alive on a memory-tight box, both having
+     finished their work and printed results. run.ts closed src/agent/mcp.ts's
+     client — unused since the tool refactor — while the tools opened
+     src/enrich/mcp.ts's, which nothing ever closed. Consolidated: one Apify
+     client at src/agent/apify.ts, closed by the runner, src/enrich deleted.
+
+  2. A FLAKY TEST that passed once and then failed with climbing counts.
+
+  3. The cause of (2), and the instructive one: ESM hoists `import` above
+     module-level code, so `process.env['JOB_AGENT_DB'] = ...` at the top of the
+     test file ran AFTER db.ts had already opened the real database. The
+     liveness tests were writing into production state — 99 rows, removed. The
+     fix is a dynamic import after the assignment, and any future test touching
+     the store must do the same.
+
+Files
+  src/agent/tools/index.ts   record_no_contact; row counts; degradation message
+  src/agent/enrich-agent.ts  prompt names record_no_contact
+  src/agent/run.ts           answered_none; closes the right MCP client
+  src/store/db.ts            actor_calls table, actorHealth()
+  src/store/liveness.test.ts (new, 6 tests)
+  src/agent/apify.ts         moved from src/enrich/mcp.ts
+  docs/architecture.md       (new)
+  docs/sprint-01-plan.md     v2.0 + 10-dimension stress test
+
+Tests: 29 -> 35. npm run typecheck clean, stable across repeated runs.

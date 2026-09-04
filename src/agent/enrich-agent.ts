@@ -24,7 +24,7 @@ Someone is applying for this role. What you decide determines who they message, 
 
 YOUR TOOLS
 
-resolve_company turns a company name into a LinkedIn URL. find_people_at_company lists people there, optionally filtered by title. find_employees_at_company answers the same question from an independent source — worth a call when the first returns nothing, since an empty result can mean either "nobody matches" or "that source is struggling", and you cannot tell which from one look. read_recent_posts shows what someone has written lately. record_contact commits your answer and ends the run.
+resolve_company turns a company name into a LinkedIn URL. find_people_at_company lists people there, optionally filtered by title. find_employees_at_company answers the same question from an independent source — worth a call when the first returns nothing, since an empty result can mean either "nobody matches" or "that source is struggling", and you cannot tell which from one look. read_recent_posts shows what someone has written lately. record_contact commits a person and ends the run. record_no_contact commits that nobody could be found and also ends the run — that is a real answer, not a failure, and it is always better than guessing.
 
 Each returns its results directly. There is no separate step to fetch them.
 
