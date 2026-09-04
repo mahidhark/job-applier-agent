@@ -7,7 +7,7 @@
  * from "it failed a gate": the first is a discovery problem, the second a
  * rubric one. Conflating them sends you to the wrong file.
  */
-import { q } from './store/db.js';
+import { q, roleOf, postingsInRole } from './store/db.js';
 
 const [id] = process.argv.slice(2);
 if (!id) {
@@ -29,6 +29,19 @@ if (!job) {
 console.log(`\n  ${job.company} — ${job.title}`);
 console.log(`  ${job.url}`);
 console.log(`  state ${job.state}${job.score != null ? `, score ${job.score}` : ''}, first seen ${job.first_seen}\n`);
+
+// `variant` needs its own sentence: it is not a rejection, and without saying
+// so the honest answer "we already kept this job under another listing" reads
+// as a silent disappearance.
+if (job.state === 'variant') {
+  const role = roleOf(id);
+  const siblings = role ? postingsInRole(role.id) : [];
+  const rep = siblings.find((p) => p.state !== 'variant');
+  console.log(`  Not rejected. This is another listing of a role already kept:`);
+  console.log(`    ${role?.company ?? ''} — ${role?.title ?? ''}  (${siblings.length} listings)`);
+  if (rep) console.log(`    kept as: ${rep.title}\n            ${rep.url}`);
+  console.log(`\n  If these are really different jobs, the grouping is wrong — say so.\n`);
+}
 
 const gates = q<{ gate: string; passed: number; detail: string }>(
   'SELECT gate, passed, detail FROM gates WHERE job_id = ? ORDER BY passed, gate', id,
