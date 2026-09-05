@@ -31,10 +31,27 @@ async function pass(): Promise<void> {
   const sources = buildSources(config);
 
   console.log(`\n  ${now.toISOString()}  ${sources.length} sources`);
-  const budget = config.enrich.maxSpendPerDayUsd;
-  const spent = spentLast24h();
-  if (spent >= budget) {
-    console.log(`  ! $${spent.toFixed(2)} spent in 24h, budget $${budget} — paid sources skipped`);
+  // TWO BUDGETS, because these are not the same kind of spending.
+  //
+  // Discovery is $0.0004 a result — a full pass over every configured search is
+  // about seven cents. A single contact lookup is $0.14, twice that. Under one
+  // shared cap, two lookups permanently starve the thing that feeds the funnel,
+  // which is exactly what happened on 2026-09-04: a seven-cent discovery pass
+  // blocked by $2.04 of unrelated enrichment.
+  const discoverBudget = config.searches.maxSpendPerDayUsd;
+  const spentDiscovering = spentLast24h('discover');
+  if (spentDiscovering >= discoverBudget) {
+    console.log(
+      `  ! $${spentDiscovering.toFixed(2)} spent discovering in 24h, ` +
+      `budget $${discoverBudget} — paid sources skipped`,
+    );
+  }
+  const spentEnriching = spentLast24h('enrich');
+  if (spentEnriching >= config.enrich.maxSpendPerDayUsd) {
+    console.log(
+      `  ! $${spentEnriching.toFixed(2)} spent enriching in 24h, ` +
+      `budget $${config.enrich.maxSpendPerDayUsd} — contact lookups will refuse`,
+    );
   }
 
   let seen = 0, fresh = 0, accepted = 0, variants = 0;
@@ -44,7 +61,7 @@ async function pass(): Promise<void> {
   }> = [];
 
   for (const source of sources) {
-    if (source.paid && spent >= budget) continue;
+    if (source.paid && spentDiscovering >= discoverBudget) continue;
 
     let jobs;
     try {

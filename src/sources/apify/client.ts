@@ -18,16 +18,29 @@ export interface RunResult {
 /** Actor names are `user/name`; the REST path wants `user~name`. */
 const toPath = (actor: string) => actor.replace('/', '~');
 
-export async function runActor(
+/**
+ * Run an actor and return its dataset rows.
+ *
+ * `run-sync-get-dataset-items`, NOT `run-sync`. The latter returns the actor's
+ * OUTPUT key-value record, which this actor does not write, so the body came
+ * back empty and `res.json()` threw "Unexpected end of JSON input" on every
+ * call. Between that and a rejected `datePosted` value, paid discovery had
+ * never once succeeded: 3,088 postings in the store, every one of them from
+ * the two free ATS boards.
+ *
+ * One call rather than run-then-read, because the endpoint exists precisely to
+ * avoid managing a dataset id for a job that is already finished.
+ */
+export async function runActorForItems<T>(
   actor: string,
   input: Record<string, unknown>,
-  { timeoutSecs = 300, memoryMbytes = 1024 } = {},
-): Promise<RunResult> {
+  { timeoutSecs = 300, memoryMbytes = 1024, limit = 1000 } = {},
+): Promise<T[]> {
   if (!APIFY_TOKEN) throw new Error('APIFY_TOKEN is not set');
 
   const url =
-    `${BASE}/acts/${toPath(actor)}/run-sync?token=${APIFY_TOKEN}` +
-    `&timeout=${timeoutSecs}&memory=${memoryMbytes}`;
+    `${BASE}/acts/${toPath(actor)}/run-sync-get-dataset-items?token=${APIFY_TOKEN}` +
+    `&timeout=${timeoutSecs}&memory=${memoryMbytes}&clean=true&limit=${limit}`;
 
   const res = await fetch(url, {
     method: 'POST',
@@ -37,10 +50,17 @@ export async function runActor(
   if (!res.ok) {
     throw new Error(`apify ${actor}: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
   }
-  const body = (await res.json()) as { data?: { defaultDatasetId?: string; status?: string; id?: string } };
-  const datasetId = body.data?.defaultDatasetId;
-  if (!datasetId) throw new Error(`apify ${actor}: run returned no dataset`);
-  return { datasetId, status: body.data?.status ?? 'UNKNOWN', runId: body.data?.id ?? '' };
+
+  // An empty body is not an empty result — it means the response was not what
+  // this code expects, and silently returning [] is how the previous shape
+  // hid a total outage behind "0 new".
+  const text = await res.text();
+  if (!text.trim()) throw new Error(`apify ${actor}: empty response body`);
+  const parsed = JSON.parse(text) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error(`apify ${actor}: expected an array of items, got ${typeof parsed}`);
+  }
+  return parsed as T[];
 }
 
 export async function datasetItems<T>(datasetId: string, limit = 1000): Promise<T[]> {

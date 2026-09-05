@@ -17,7 +17,30 @@
  */
 import type { AgentConfig } from '../../config-file.js';
 import { recordSpend } from '../../store/db.js';
-import { runActor, datasetItems } from './client.js';
+
+/**
+ * LinkedIn's own duration codes, which is what the actor demands.
+ *
+ * `past24Hours` is rejected with
+ *   "Field input.datePosted must be equal to one of the allowed values:
+ *    \"\", \"r2592000\", \"r604800\", \"r86400\""
+ *
+ * The config kept the readable names and passed them straight through, so
+ * EVERY paid discovery call has failed since this source was written — 3,088
+ * postings in the store, all of them from the two free ATS boards, and zero
+ * discovery spend ever recorded. The per-source try/catch turned a total
+ * outage into one warning line per pass.
+ *
+ * Config keeps the readable names and this maps them, because `r2592000` in a
+ * config file is a thing nobody can check by reading.
+ */
+export const DATE_POSTED: Record<string, string> = {
+  anyTime: '',
+  past24Hours: 'r86400',
+  pastWeek: 'r604800',
+  pastMonth: 'r2592000',
+};
+import { runActorForItems } from './client.js';
 import type { JobPosting, Source } from '../types.js';
 
 interface LinkedinJob {
@@ -65,15 +88,14 @@ export function linkedinSource(config: AgentConfig): Source {
           limitPerSource: s.limit,
           scrapeCompany: false,
         };
-        if (s.datePosted) input['datePosted'] = s.datePosted;
+        if (s.datePosted) input['datePosted'] = DATE_POSTED[s.datePosted]!;
         if (s.under10Applicants) input['under10Applicants'] = true;
 
-        const run = await runActor(discoveryActor, input);
-        const rows = await datasetItems<LinkedinJob>(run.datasetId, s.limit);
+        const rows = await runActorForItems<LinkedinJob>(discoveryActor, input, { limit: s.limit });
 
         // Rough, and deliberately so — the exact figure comes from Apify's
         // billing. This exists to enforce a daily ceiling, not to invoice.
-        recordSpend(discoveryActor, rows.length * 0.0004 + 0.001, s.name);
+        recordSpend(discoveryActor, rows.length * 0.0004 + 0.001, s.name, 'discover');
 
         for (const j of rows) {
           if (!j.id) continue;

@@ -1,12 +1,38 @@
 {
-  "$comment": "Apify-backed discovery for roles at companies not on a known ATS. Costs money per result, so keep `limit` tight and lean on the ATS boards above for companies you already care about.",
+  "$comment": "Apify-backed discovery for roles at companies not on a known ATS. Costs money per result, so keep `limit` tight and lean on the ATS boards above for companies you already care about. maxSpendPerDayUsd is SEPARATE from enrich.maxSpendPerDayUsd: discovery costs $0.0004 a result and a contact lookup costs $0.14, so one budget over both lets two lookups starve the thing that feeds the funnel.",
   "enabled": true,
+  "maxSpendPerDayUsd": 0.5,
   "discoveryActor": "valig/linkedin-jobs-scraper",
   "enrichActor": "curious_coder/linkedin-jobs-scraper",
   "searches": [
-    { "name": "pm-nl",        "keywords": "Product Manager",  "location": "Netherlands", "datePosted": "past24Hours", "limit": 60 },
-    { "name": "product-lead", "keywords": "Product Lead",     "location": "Netherlands", "datePosted": "past24Hours", "limit": 40 },
-    { "name": "head-product", "keywords": "Head of Product",  "location": "Netherlands", "datePosted": "pastWeek",    "limit": 40 },
-    { "name": "low-pool",     "keywords": "Product Manager",  "location": "Netherlands", "datePosted": "pastWeek",    "limit": 40, "under10Applicants": true }
+    {
+      "name": "pm-nl",
+      "keywords": "Product Manager",
+      "location": "Netherlands",
+      "datePosted": "past24Hours",
+      "limit": 60
+    },
+    {
+      "name": "product-lead",
+      "keywords": "Product Lead",
+      "location": "Netherlands",
+      "datePosted": "past24Hours",
+      "limit": 40
+    },
+    {
+      "name": "head-product",
+      "keywords": "Head of Product",
+      "location": "Netherlands",
+      "datePosted": "pastWeek",
+      "limit": 40
+    },
+    {
+      "name": "low-pool",
+      "keywords": "Product Manager",
+      "location": "Netherlands",
+      "datePosted": "pastWeek",
+      "limit": 40,
+      "under10Applicants": true
+    }
   ]
 }
