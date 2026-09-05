@@ -20,11 +20,16 @@
  */
 import { modelForTask, type AiConfig } from '../ai/index.js';
 import { correctionsFor } from '../store/db.js';
+import { normalise } from '../agent/grounding.js';
 
 /** Beyond this the prompt stops being worth its context. Finding 1.a. */
 const MAX_QUALIFIERS = 40;
 /** Enough boilerplate to name a brand; not a whole posting. */
 const EXCERPT = 800;
+/** A company whose descriptions are mostly blank cannot be judged. Finding 1.b. */
+const MIN_DESCRIBED = 0.5;
+/** Below this a description carries no boilerplate worth reading. */
+const MIN_DESCRIPTION = 80;
 /** What an empty qualifier is called in the prompt and the assignment. */
 export const NO_QUALIFIER = '(no qualifier)';
 /** Where an unassignable qualifier goes. Finding 2.c / §3.4. */
@@ -153,6 +158,50 @@ export function singleUnit(
  *
  * Returns a reason to reject, or null. Finding 1.c — never trust the shape.
  */
+/**
+ * Is there enough description here to tell one business from another?
+ *
+ * All 117 LinkedIn-sourced postings carry an empty description, and asked about
+ * three of them a model invented a business unit named after a product line
+ * ("AI Finance") citing a "company description" that does not exist. Given
+ * nothing to read, a model will still answer.
+ *
+ * The equivalent check has been in judge.ts since it was written, and v2.1
+ * recorded it as finding 1.b — and it was never carried into this file. That
+ * gap is what let the fabrication happen.
+ */
+/**
+ * Does this evidence quote something real?
+ *
+ * A WINDOW match, not the whole string. `checkGrounding` (which record_contact
+ * uses) demands the entire citation appear verbatim, and that is right there
+ * because the model is quoting a post it just read. Here the model is quoting
+ * an 800-character excerpt and will trim or extend at the edges, so
+ * whole-string matching rejects honest quotes.
+ *
+ * Forty characters of verbatim text cannot be invented, which is the property
+ * that matters. Rejecting a correct taxonomy is the more expensive error: a
+ * fabricated brand splits a role that should be merged and shows up as a
+ * duplicate queue entry, while a rejected one merges two brands and hides a
+ * job nobody ever learns about.
+ */
+const MIN_QUOTE = 40;
+
+export function quotesSomething(evidence: string, normalisedHaystack: string): boolean {
+  const n = normalise(evidence);
+  if (n.length < MIN_QUOTE) return normalisedHaystack.includes(n) && n.length > 0;
+  for (let i = 0; i + MIN_QUOTE <= n.length; i++) {
+    if (normalisedHaystack.includes(n.slice(i, i + MIN_QUOTE))) return true;
+  }
+  return false;
+}
+
+export function describedEnough(samples: QualifierSample[]): boolean {
+  if (!samples.length) return false;
+  const withText = samples.filter((s) => s.description.trim().length > MIN_DESCRIPTION).length;
+  return withText / samples.length >= MIN_DESCRIBED;
+}
+
 export function validateTaxonomy(t: {
   units?: CompanyUnit[]; assignment?: Array<{ qualifier: string; unit: string }>;
 }, samples: QualifierSample[]): string | null {
@@ -164,6 +213,22 @@ export function validateTaxonomy(t: {
   const folded = names.map((n) => n.toLowerCase());
   if (new Set(folded).size !== folded.length) return 'two units share a name';
   if (t.units.some((u) => !(u.evidence ?? '').trim())) return 'a unit cites no evidence';
+
+  // The evidence must actually appear in a description we showed it.
+  //
+  // `record_contact` has checked its quote against real tool output since the
+  // day it was written, and refuses when it is absent. This did not, and a
+  // model walked straight through the gap — citing "Company description refers
+  // to AI Finance as the overarching business unit", a sentence that appears in
+  // no posting anywhere. Requiring evidence to be non-empty asks only that the
+  // model write something.
+  const haystack = normalise(samples.map((s) => s.description).join('\n\n'));
+  for (const u of t.units) {
+    if (!quotesSomething(u.evidence!, haystack)) {
+      return `unit "${u.name}" cites evidence that appears in no description: ` +
+             `"${u.evidence!.trim().slice(0, 80)}"`;
+    }
+  }
 
   const known = new Set(folded);
   for (const a of t.assignment) {
@@ -275,6 +340,19 @@ export async function deriveTaxonomy(
   if (!samples.length) return singleUnit(samples, 'key', 'no listings');
   if (samples.length === 1) {
     return singleUnit(samples, 'key', 'only one distinct qualifier at this company');
+  }
+
+  // Nothing to read means nothing to judge, and no model call.
+  //
+  // Falling back to ONE unit looks like it contradicts the split-when-unsure
+  // rule used elsewhere in this design, and does not. That rule applies inside
+  // a taxonomy we believe, where an unassignable qualifier gets its own unit.
+  // Here the whole taxonomy would be unevidenced, and absence of evidence for a
+  // split is not evidence of one. One unit is the known baseline — exactly what
+  // a company with no taxonomy already gets.
+  if (!describedEnough(samples)) {
+    return singleUnit(samples, 'key',
+      'the listings carry no descriptions, so there is nothing to tell brands apart by');
   }
 
   const notes = correctionsFor('taxonomy', company.toLowerCase())

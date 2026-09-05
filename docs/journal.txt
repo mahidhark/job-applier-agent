@@ -1388,3 +1388,80 @@ Files
   config/sources/searches.json   maxSpendPerDayUsd: 0.5
 
 Tests: 187 -> 200. npm run typecheck clean. Spend: $0.07.
+
+
+2026-09-05  Cerebras matched Opus, then found three holes I had left
+
+Ran the taxonomy pass on Cerebras (gpt-oss-120b) across all 11 companies, dry
+run. Two results, and the second is worth more.
+
+CEREBRAS MATCHES OPUS ON THE HARD CASES. Bjak came back BJAK and KIRA with the
+same qualifier assignment and the same quoted boilerplate; Skydreams came back
+Homedeal and Moving24. On the judgement this design exists for, a cheap model
+and an expensive one agree. That is the first real evidence for the whole SLM
+thesis, and it cost a fraction of the Opus run.
+
+Most companies never called a model at all — one distinct qualifier
+short-circuits to a single unit for free. Only Bjak and Skydreams needed
+judging out of eleven.
+
+AND IT PRODUCED THE WRONG TAXONOMY I HAD BEEN WAITING FOR:
+
+    BJAK — 3 listings ... 1 unit
+      AI Finance — "AI Finance business unit focusing on AI-driven financial..."
+        evidence: "Company description refers to AI Finance as the overarching
+                   business unit that develops AI-driven financial se"
+
+A product line named as a brand, citing a sentence that appears in no posting
+anywhere. Not really a Cerebras failure — three of mine.
+
+  1. describedEnough() has been in judge.ts since it was written, and v2.1
+     recorded it as finding 1.b, and I never carried it into taxonomy.ts. Those
+     three postings have ZERO characters of description. Given nothing to read
+     a model will still answer.
+
+  2. validateTaxonomy required evidence to be non-empty and nothing more.
+     record_contact has checked its quote against real tool output since the
+     day it was written and REFUSES when absent. Same pattern, applied in one
+     place and not the other, and the model walked straight through the gap.
+
+  3. All 117 LinkedIn postings carry an empty description:
+
+         linkedin    117 sampled,   0 with a description, median 0 chars
+         ashby       200 sampled, 200 with a description, median 3760
+         greenhouse    4 sampled,   4 with a description, median 5091
+
+     Bigger than the taxonomy: gates.ts:96 screens on title + department +
+     description, so every LinkedIn posting is being judged on its title alone.
+     And searches.json has enrichActor: "curious_coder/linkedin-jobs-scraper"
+     configured and referenced NOWHERE in src/ — presumably meant to fetch full
+     descriptions for survivors, never wired. Flagged, needs its own plan.
+
+FIXING 2 IMMEDIATELY BROKE SOMETHING ELSE, which is the part worth recording.
+Reusing checkGrounding wholesale rejected the CORRECT BJAK/KIRA taxonomy twice
+and fell back to one unit. checkGrounding demands the entire citation appear
+verbatim — right for record_contact, where the model quotes a post it just
+read, and wrong here, where it quotes an 800-character excerpt and trims or
+extends at the edges.
+
+Replaced with a 40-character window match. Forty characters of verbatim text
+cannot be invented, which is the property being defended; exact equality was
+never the point. And the direction matters: a fabricated brand splits a role
+that should be merged and shows up as a duplicate queue entry, while a rejected
+one merges two brands and hides a job nobody ever learns about. Rejecting a
+correct taxonomy is the more expensive error.
+
+The rejection message now names the offending text, because "cites evidence
+that appears in no description" without saying which sentence is another
+warning nobody can act on.
+
+Also added --provider to npm run roles, so comparing a cheap model against an
+expensive one on the same real judgement does not require editing config that
+other tasks read.
+
+Files
+  src/roles/taxonomy.ts       describedEnough; quotesSomething; named rejections
+  src/roles/taxonomy.test.ts  +10 tests
+  src/roles.ts                --provider override
+
+Tests: 200 -> 212. npm run typecheck clean.
