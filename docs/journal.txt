@@ -1266,3 +1266,78 @@ Files
 
 Tests: 178 -> 183. npm run typecheck clean. No new spend — the taxonomies had
 been saved before the run() bug threw, so the regroup was free.
+
+
+2026-09-05  Paid discovery had never once worked
+
+Mahi chose to split the spend budget. Doing it uncovered that the thing the
+budget was blocking had never run at all.
+
+    by source: ashby=3084  greenhouse=4  linkedin=0
+    discovery spend ever: 0 calls, $0.00
+
+Every posting in the store came from the two free ATS boards. The two-company
+funnel was never thin configuration — the paid source was dead, and had been
+since it was written.
+
+THREE BUGS, IN A CHAIN, EACH HIDDEN BY THE NEXT.
+
+  1. ONE BUDGET OVER TWO COST CLASSES. Discovery is $0.0004 a result, about
+     seven cents for a full pass; a contact lookup is $0.14, twice that. Under
+     a single $2 cap, two lookups permanently starve the thing that feeds the
+     funnel — and $2.04 of enrichment was blocking a seven-cent pass. Split:
+     searches.maxSpendPerDayUsd is its own number, and spend rows now carry a
+     kind. Rows written before the column are all enrichment, so reads COALESCE
+     to it rather than silently forgetting everything spent before today.
+
+  2. datePosted: "past24Hours" WAS PASSED STRAIGHT THROUGH. The actor wants
+     LinkedIn's duration codes and rejected it with a 400 naming the four it
+     accepts. Config keeps the readable names and the adapter maps them,
+     because r2592000 in a config file is a thing nobody can check by reading.
+     loadConfig now throws on an unknown value rather than letting it fail once
+     per pass forever.
+
+  3. run-sync RETURNS THE ACTOR'S OUTPUT RECORD, not its dataset. This actor
+     writes no OUTPUT, so the body came back empty and res.json() threw
+     "Unexpected end of JSON input". The endpoint that returns items is
+     run-sync-get-dataset-items. An empty body now raises rather than reading
+     as an empty result, because returning [] is how the old shape hid a total
+     outage behind "0 new".
+
+And the reason it survived: poll.ts wraps each source in try/catch so one bad
+board cannot stop a pass. Correct, and it turned a permanently dead source into
+one warning line per pass that nobody read. Same shape as the week's other
+faults — a failure reported as a warning, and warnings are not read.
+
+RESULT
+
+    3253 seen, 117 new, 11 role(s) kept
+    companies with a live posting: 2 -> 11
+    roles: 12 -> 21
+    discovery spend: $0.07, exactly the estimate
+
+    Jumbo Supermarkten, VIDAA, FareHarbor, Adyen, Booking.com, EY, Get-e,
+    Kira, BJAK, plus the two we had.
+
+TWO THINGS THE WIDER FUNNEL IMMEDIATELY EXPOSED, both flagged not fixed.
+
+  "Bjak" (48 postings, from Ashby) and "BJAK" (3, from LinkedIn) are the same
+  employer, split by casing. That is v1.0 finding 1.f — company is board free
+  text and no source gives a stable employer id — landing for real rather than
+  as a hypothetical.
+
+  "Kira" appears as its own company on LinkedIn, while the taxonomy has KIRA as
+  a business unit of Bjak. Both are true, and it corroborates the taxonomy from
+  a completely independent direction.
+
+Files
+  src/store/db.ts                spend.kind; spentLast24h(kind)
+  src/store/spend.test.ts        (new, 7 tests)
+  src/sources/apify/client.ts    runActorForItems; empty body raises
+  src/sources/apify/linkedin-jobs.ts  DATE_POSTED map
+  src/sources/apify/date-posted.test.ts (new, 5 tests)
+  src/config-file.ts             validates datePosted at load
+  src/poll.ts                    two budgets, reported separately
+  config/sources/searches.json   maxSpendPerDayUsd: 0.5
+
+Tests: 187 -> 200. npm run typecheck clean. Spend: $0.07.
