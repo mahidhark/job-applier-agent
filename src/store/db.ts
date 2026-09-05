@@ -162,6 +162,7 @@ db.exec(`
 // and the column must exist before an index can be built on it. Getting this
 // wrong fails on exactly one of the two cases and passes on the other.
 addColumn('jobs', 'role_id', 'TEXT');
+addColumn('spend', 'kind', 'TEXT');
 addColumn('roles', 'unit', 'TEXT');
 addColumn('contacts', 'role_id', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS jobs_role ON jobs(role_id)');
@@ -224,9 +225,23 @@ export const recordDraft = (jobId: string, kind: string, body: string) =>
     `INSERT OR REPLACE INTO drafts (job_id, kind, body, created_at) VALUES (?, ?, ?, ?)`,
   ).run(jobId, kind, body, new Date().toISOString());
 
-export const recordSpend = (actor: string, usd: number, note?: string) =>
-  db.prepare('INSERT INTO spend (at, actor, usd, note) VALUES (?, ?, ?, ?)')
-    .run(new Date().toISOString(), actor, usd, note ?? null);
+/**
+ * What a paid call was FOR, not just what it cost.
+ *
+ * Discovery and enrichment differ by three orders of magnitude — $0.0004 a
+ * result against $0.14 a contact lookup — so one budget over both means two
+ * lookups can permanently starve the thing that feeds the funnel. That is not
+ * hypothetical: on 2026-09-04 a seven-cent discovery pass was blocked by $2.04
+ * of unrelated enrichment.
+ *
+ * Rows written before this column existed are all enrichment, which is why
+ * reads COALESCE to it.
+ */
+export type SpendKind = 'discover' | 'enrich';
+
+export const recordSpend = (actor: string, usd: number, note?: string, kind: SpendKind = 'enrich') =>
+  db.prepare('INSERT INTO spend (at, actor, usd, note, kind) VALUES (?, ?, ?, ?, ?)')
+    .run(new Date().toISOString(), actor, usd, note ?? null, kind);
 
 /**
  * Every actor call and how many rows it returned.
@@ -435,10 +450,20 @@ export function saveTaxonomy(company: string, units: Array<{
   })();
 }
 
-export function spentLast24h(): number {
+/**
+ * Rolling 24h spend, optionally for one kind only.
+ *
+ * Rows predating the `kind` column are all enrichment, so they COALESCE to it
+ * — otherwise the enrichment budget would silently forget everything spent
+ * before today and the guard would be defending nothing.
+ */
+export function spentLast24h(kind?: SpendKind): number {
   const since = new Date(Date.now() - 86_400_000).toISOString();
-  const row = db.prepare('SELECT COALESCE(SUM(usd), 0) AS total FROM spend WHERE at >= ?')
-    .get(since) as { total: number };
+  const sql = kind
+    ? `SELECT COALESCE(SUM(usd), 0) AS total FROM spend
+        WHERE at >= ? AND COALESCE(kind, 'enrich') = ?`
+    : 'SELECT COALESCE(SUM(usd), 0) AS total FROM spend WHERE at >= ?';
+  const row = (kind ? db.prepare(sql).get(since, kind) : db.prepare(sql).get(since)) as { total: number };
   return row.total;
 }
 
