@@ -1465,3 +1465,89 @@ Files
   src/roles.ts                --provider override
 
 Tests: 200 -> 212. npm run typecheck clean.
+
+
+2026-09-05  Session close — the instrumentation was wrong more often than the models
+
+Written at the end of a long session, because the pattern is worth more than
+any of the individual fixes and it will not be obvious from the commits.
+
+ALMOST EVERY "THE MODEL GOT IT WRONG" TURNED OUT TO BE THE INSTRUMENTATION.
+
+The day before produced seven of these and they were all harness faults: a step
+ceiling reported as "NO USABLE ANSWER", tool calls double-counted, grounding
+failing three different ways, a provider label read from config instead of the
+override, a 13k prompt fed into a 4k window, a multi-block MCP response glued
+into invalid JSON, and an honest "found nobody" scored as failure.
+
+This session added seven more of the same shape:
+
+  A QUOTA MESSAGE READ AS AN OUTAGE. Apify returns SUCCEEDED with zero rows and
+  the reason in statusMessage. I diagnosed an upstream outage, wrote it into
+  four documents and built a health table to infer it. The answer was in every
+  response.
+
+  A FIELD THAT DID NOT EXIST. linkedin-company-employees has no `headline`;
+  renderProfiles read only that, so on the only source that was answering the
+  agent was choosing between people with no job titles.
+
+  THE CHEAP MODE. Short mode returns an opaque member id where the profile URL
+  belongs. We were paying for a source, getting a dead link, and reading that
+  as the source being weak.
+
+  A DEDUPE THAT DEDUPED NOTHING. Keyed on company plus EXACT title, so eight
+  spellings of one job were eight roles.
+
+  THE SAME QUESTION ASKED SIX TIMES. Which brands a company runs is a fact
+  about the company; asking it per candidate group produced six derivations
+  that disagreed.
+
+  EVIDENCE NEVER CHECKED. record_contact has verified its quotes since the day
+  it was written. validateTaxonomy asked only that the model write something,
+  and a model duly wrote something that appears in no posting anywhere.
+
+  A SOURCE THAT HAD NEVER RUN. Paid discovery: 3,088 postings in the store,
+  every one from the two free ATS boards, zero discovery spend ever. Three
+  bugs in a chain, each hidden by the next, and the whole thing hidden behind
+  one warning line per pass.
+
+THE THREAD CONNECTING THEM: a failure reported as a warning, and warnings are
+not read. poll.ts wraps each source in try/catch so one bad board cannot stop a
+pass — correct, and it let a dead source stay dead for the life of the source.
+The lesson is not "stop catching errors". It is that a thing which cannot
+succeed must not be reported the same way as a thing which succeeded and found
+nothing.
+
+WHAT THIS SAYS ABOUT THE PROJECT'S THESIS. The measured result is that on the
+hardest judgement in the system — is this one job or two, from the boilerplate
+in a description — Cerebras gpt-oss-120b and Claude Opus agree exactly, on both
+hard cases, with the same quoted evidence. And the same day, a 120B model on a
+raw MCP surface made eighteen consecutive searches and never read a result.
+Same class of model. The surface decided the outcome, not the weights.
+
+So: fix what you hand the model and how you read the answer, before reaching
+for a better model or a fine-tune. Every path to improvement — few-shot,
+retrieval, LoRA, DPO — needs the same artefact first, which is decisions and
+corrections recorded in a gradeable form. That table now exists and is empty.
+
+WHERE THINGS STAND
+
+  tests            35 -> 212
+  roles             7 across 2 companies -> 23 across 11
+  discovery        never worked -> works, $0.07 a pass
+  eval             scorers, case schema and corrections substrate exist,
+                   wired to real data, never yet run against a graded set
+
+FLAGGED, NOT FIXED, in the order I would take them
+
+  1. All 117 LinkedIn postings carry an empty description, so gates.ts screens
+     them on title alone and the taxonomy pass cannot judge them. searches.json
+     names an enrichActor that is referenced nowhere in src/. Wants a plan doc
+     and a stress test, and it is a cost question as much as a design one.
+  2. "Bjak" and "BJAK" are one employer split by casing. It has already caused
+     one wrong taxonomy.
+  3. A dangling test:1 contact row in the live store, from the ESM-hoisting
+     incident. Removing rows from production is Mahi's call.
+  4. The eval case set. Easier and more meaningful once (1) is done.
+
+Tests: 212, unchanged by this entry. No code.
