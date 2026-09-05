@@ -16,6 +16,10 @@ npm run explain -- <id>  # why one posting was skipped, or never seen
 npm run agent -- <id>    # find the contact for one posting (SPENDS)
 npm run cases:prepare    # build the eval grading sheet (SPENDS)
 npm run cases:check      # validate the graded case set
+npm run roles            # the roles, and which listings sit under each
+npm run roles -- --taxonomy   # DRY RUN: what brands each company runs
+npm run roles -- --learn      # derive and SAVE those taxonomies (SPENDS)
+npm run roles -- --backfill   # regroup existing postings, no spend
 npm test
 npm run typecheck
 ```
@@ -56,6 +60,9 @@ Reading it top to bottom explains the system.
   wrapped Apify tools and a budget. `tools/index.ts` is the whole tool surface;
   `apify.ts` is the single MCP client and the only one anything should open.
   `run.ts` is the CLI driver.
+- **`src/roles/`** — postings become roles. `key.ts` is pure and builds the id
+  `company::unit::roleCore`; `taxonomy.ts` is the one model call per company
+  that decides what business units it runs.
 - **`src/eval/`** — the case set and the scorers. Nothing here touches the
   network except `prepare-cases.ts`.
 
@@ -99,6 +106,18 @@ wide — `harvestapi/linkedin-company` ran fine while both people-scrapers were
 capped — and it is a **tier** check, not a balance one, so topping up credit
 does not lift it. Wording also varies by actor ("reached" vs "exceeded"), which
 is why `BLOCKING_STATUS` matches a pattern rather than a string.
+
+**A role is not a posting, and the queue counts roles.** One job is advertised
+many times — per market, per product line, and under different brands of the
+same parent. 38 live postings are 12 roles. The extra listings sit in `variant`
+and are shown under their role rather than competing for a queue slot.
+
+**Grouping uses a model; screening does not.** Not a contradiction of the rule
+above: screening runs over every posting ever seen and must stay free and
+auditable, while grouping runs over the ~38 survivors and asks something no
+rule can answer. The judgement is made **once per company** and cached in
+`company_units`; `poll` only ever reads it, so an unattended run is never
+blocked or billed by it.
 
 **`enriched` and `queued` are declared in `JOB_STATES` and never written.**
 Nothing sets them. `queue.ts` selects on all three and works only because of
