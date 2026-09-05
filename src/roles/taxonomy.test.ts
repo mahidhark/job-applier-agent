@@ -8,8 +8,10 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { normalise } from '../agent/grounding.js';
 import {
-  sampleByQualifier, slugifyUnit, validateTaxonomy, singleUnit, unitFor, buildPrompt,
+  sampleByQualifier, slugifyUnit, validateTaxonomy, singleUnit, unitFor, buildPrompt, describedEnough,
+  quotesSomething,
   NO_QUALIFIER, type TaxonomyPosting, type QualifierSample, type Taxonomy,
 } from './taxonomy.js';
 
@@ -82,12 +84,17 @@ describe('a unit name that is safe in a role id', () => {
 });
 
 describe('never trusting what came back', () => {
+  // Descriptions must really contain the evidence, because the validator now
+  // checks that. The placeholder 'd' these once used would have let any quote
+  // through — which is exactly the hole a model walked into.
   const samples: QualifierSample[] = [
-    { qualifier: 'AI Neobank', exampleTitle: 't', description: 'd' },
-    { qualifier: 'AI Neobank App', exampleTitle: 't', description: 'd' },
+    { qualifier: 'AI Neobank', exampleTitle: 't',
+      description: 'ABOUT BJAK. BJAK is a Southeast Asia superapp for insurance and money.' },
+    { qualifier: 'AI Neobank App', exampleTitle: 't',
+      description: 'About KIRA. KIRA is our app brand, building AI money tools.' },
   ];
   const ok = {
-    units: [{ name: 'BJAK', description: 'superapp', evidence: 'BJAK is a superapp' },
+    units: [{ name: 'BJAK', description: 'superapp', evidence: 'BJAK is a Southeast Asia superapp' },
             { name: 'KIRA', description: 'consumer app', evidence: 'KIRA is our app brand' }],
     assignment: [{ qualifier: 'AI Neobank', unit: 'BJAK' },
                  { qualifier: 'AI Neobank App', unit: 'KIRA' }],
@@ -113,6 +120,31 @@ describe('never trusting what came back', () => {
     assert.match(validateTaxonomy(
       { ...ok, units: [{ name: 'BJAK', description: 'x', evidence: '' }, ok.units[1]!] },
       samples)!, /cites no evidence/);
+  });
+
+  /**
+   * The failure this check was added for. Asked about three postings with
+   * empty descriptions, a model returned a unit named after a product line
+   * citing "Company description refers to AI Finance as the overarching
+   * business unit" — a sentence in no posting anywhere.
+   *
+   * record_contact has checked its quote against real tool output since the day
+   * it was written. This did not, and "evidence must be non-empty" asks only
+   * that the model write something.
+   */
+  test('evidence that appears in no description is rejected', () => {
+    assert.match(validateTaxonomy({
+      ...ok,
+      units: [{
+        name: 'AI Finance', description: 'AI Finance business unit',
+        evidence: 'Company description refers to AI Finance as the overarching business unit',
+      }],
+      assignment: samples.map((s) => ({ qualifier: s.qualifier, unit: 'AI Finance' })),
+    }, samples)!, /appears in no description/);
+  });
+
+  test('evidence quoted verbatim from a description passes', () => {
+    assert.equal(validateTaxonomy(ok, samples), null);
   });
 
   test('two units sharing a name are rejected', () => {
@@ -186,5 +218,72 @@ describe('the prompt', () => {
     assert.match(flat(['BJAK and KIRA are different brands']), /TOLD BEFORE/);
     assert.match(flat(['BJAK and KIRA are different brands']), /different brands/);
     assert.ok(!flat().includes('TOLD BEFORE'));
+  });
+});
+
+describe('nothing to read means nothing to judge', () => {
+  const blank = (qualifier: string): QualifierSample =>
+    ({ qualifier, exampleTitle: `Technical Product Lead - ${qualifier}`, description: '' });
+
+  // All 117 LinkedIn-sourced postings carry an empty description. Given three
+  // of them, a model still answered — and invented a brand.
+  test('samples with no descriptions cannot be judged', () => {
+    assert.equal(describedEnough([blank('AI Stockbroking'), blank('AI Finance')]), false);
+  });
+
+  test('a single blank among real ones is fine', () => {
+    const real = { qualifier: 'AI Neobank', exampleTitle: 't', description: 'x'.repeat(200) };
+    assert.equal(describedEnough([real, real, blank('AI Finance')]), true);
+  });
+
+  test('a description too short to carry boilerplate does not count', () => {
+    assert.equal(describedEnough([
+      { qualifier: 'a', exampleTitle: 't', description: 'Remote. Full time.' },
+      { qualifier: 'b', exampleTitle: 't', description: 'Remote. Part time.' },
+    ]), false);
+  });
+
+  test('no samples at all is not enough', () => {
+    assert.equal(describedEnough([]), false);
+  });
+});
+
+describe('what counts as quoting something', () => {
+  const hay = normalise(
+    'ABOUT BJAK. The original mission of BJAK is we believe people deserve smarter ways ' +
+    'to plan, save and grow their money across Southeast Asia.');
+
+  test('a verbatim quote passes', () => {
+    assert.ok(quotesSomething('we believe people deserve smarter ways to plan', hay));
+  });
+
+  // The model is quoting an 800-character excerpt and will trim or extend at
+  // the edges. Whole-string matching rejected an honest quote and lost a
+  // correct BJAK/KIRA split, which is the more expensive error: a fabricated
+  // brand shows up as a duplicate queue entry, a rejected one hides a job.
+  test('a quote with extra text on the end still passes', () => {
+    assert.ok(quotesSomething(
+      'we believe people deserve smarter ways to plan, save and grow — from the posting', hay));
+  });
+
+  test('a quote the model reformatted at the start still passes', () => {
+    assert.ok(quotesSomething(
+      '"...the original mission of BJAK is we believe people deserve smarter ways"', hay));
+  });
+
+  // Forty characters of verbatim text cannot be invented. That is the property
+  // being defended, not exact equality.
+  test('invented prose about a description is rejected', () => {
+    assert.equal(quotesSomething(
+      'Company description refers to AI Finance as the overarching business unit', hay), false);
+  });
+
+  test('a fragment too short to prove anything is rejected unless it is present', () => {
+    assert.equal(quotesSomething('AI Finance', hay), false);
+    assert.ok(quotesSomething('ABOUT BJAK', hay));
+  });
+
+  test('empty evidence proves nothing', () => {
+    assert.equal(quotesSomething('', hay), false);
   });
 });

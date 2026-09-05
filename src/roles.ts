@@ -7,6 +7,9 @@
  *   npm run roles -- --taxonomy  DRY RUN: what brands each company runs
  *   npm run roles -- --learn     derive and SAVE those taxonomies, then regroup
  *
+ * Add `--provider cerebras` to either to judge with a different model for that
+ * run only, without editing config other tasks read.
+ *
  * This exists because a group is a HYPOTHESIS. "AI Finance App" and "AI Neobank
  * App" at one company might be one job advertised twice or two teams with two
  * managers, and no title tells you which. Grouping without a way to read the
@@ -24,6 +27,20 @@ import {
 import { loadConfig } from './config-file.js';
 
 const args = process.argv.slice(2);
+
+/**
+ * Which provider judges, for this run only.
+ *
+ * A flag rather than a config edit, because comparing a cheap model against an
+ * expensive one on the same real judgement is the whole point of the project,
+ * and it should not require editing a file that other tasks read.
+ */
+function withProvider<T extends { ai: { provider: string; tasks?: Record<string, string> } }>(config: T): T {
+  const i = args.indexOf('--provider');
+  const name = i >= 0 ? args[i + 1] : undefined;
+  if (!name) return config;
+  return { ...config, ai: { ...config.ai, tasks: { ...config.ai.tasks, judge: name } } };
+}
 
 /**
  * Group postings that were stored before grouping existed.
@@ -138,7 +155,7 @@ function backfill(): void {
  * durable judgement that should be made deliberately.
  */
 async function learnTaxonomies(): Promise<void> {
-  const config = loadConfig();
+  const config = withProvider(loadConfig());
   const companies = q<{ company: string }>(
     `SELECT DISTINCT company FROM jobs WHERE state != 'rejected' ORDER BY company`,
   );
@@ -229,7 +246,7 @@ function list(): void {
  * cheaper than finding out after it is wired into the poll.
  */
 async function dryRun(): Promise<void> {
-  const config = loadConfig();
+  const config = withProvider(loadConfig());
   const roles = q<Role>('SELECT * FROM roles ORDER BY company, role_key');
   if (!roles.length) {
     console.log('\n  No roles yet. Run `npm run roles -- --backfill` first.\n');
@@ -292,7 +309,7 @@ async function dryRun(): Promise<void> {
  * role ids have been rebuilt around it.
  */
 async function taxonomyDryRun(): Promise<void> {
-  const config = loadConfig();
+  const config = withProvider(loadConfig());
   const companies = q<{ company: string }>(
     `SELECT DISTINCT company FROM jobs WHERE state != 'rejected' ORDER BY company`,
   );
