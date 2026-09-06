@@ -1,9 +1,14 @@
 # Sprint 1 — the evaluation harness
 
-*v2.0. Supersedes v1.0, which was written before the Mastra refactor and before
-seven harness faults showed that measurement, not capability, was the blocker.
-Stress-tested across all 10 dimensions per `sop/stress-test-10-dimensions.md`;
-absorption notes in §7.*
+*v2.1. Supersedes v2.0. The sprint stopped at step 4 of 6; this amendment
+unblocks the rest. §2.3 was specified against an API that does not exist and
+contradicted this document's own finding 2.a — both are resolved here, and the
+resolution is smaller than either problem looked. Stress-tested across all 10
+dimensions per `sop/stress-test-10-dimensions.md`; v2.0 notes in §7, v2.1 notes
+in §8.*
+
+*v2.0 superseded v1.0, which was written before the Mastra refactor and before
+seven harness faults showed that measurement, not capability, was the blocker.*
 
 ## 1. Goal
 
@@ -72,6 +77,11 @@ its own contestants flatters that contestant.
 Three changes against the table above. None were forced by a blocker; each was
 a better answer found while building, so each needs Mahi's yes or no.
 
+**v2.1 status: all three still unratified.** They shipped on 2026-09-04 and have
+been pending since. `[Mahi-verify]` — see finding 10.d. §2.3 depends on (2)
+being accepted, because it wires `GATES` and `SCORERS` in the shape (2) created.
+The v2.1 recommendation is to ratify all three; (2) is the strongest of them.
+
 1. **`@mastra/evals` added as a dependency.** The plan assumed `createScorer`
    and nothing else. `@mastra/evals/scorers/prebuilt` ships
    `createTrajectoryScorerCode`, which grades four dimensions at once —
@@ -108,12 +118,58 @@ Quoting it hands the glob to Node. Suite went 44 → 75, of which 31 are new.
 
 ### 2.3 Experiment runner
 
-`src/eval/experiment.ts` wrapping `dataset.startExperiment()`. Runs
-cases × providers, persists results, prints a table.
+*v2.1: rewritten. v2.0 specified `dataset.startExperiment()`, which does not
+exist at the installed versions, and which contradicted finding 2.a of this
+document's own stress test. Both have one resolution, and it removes work
+rather than adding it.*
 
-Must report **variance, not just means**. Claude picked Tiffany on one run and
-Ingmar on two others from identical input. A single run per cell would report
-that as a difference between models. Three runs per cell minimum.
+`src/eval/experiment.ts`, driven by **`runEvals` from `@mastra/core/evals`** —
+verified present at `@mastra/core` 1.64.0, `@mastra/evals` 1.10.0:
+
+```
+runEvals({ data, scorers, gates, target, targetOptions, onItemComplete, concurrency })
+```
+
+**`data` is a plain array.** `runEvals` iterates it with `pMap`. There is no
+Dataset type to construct, no `startExperiment` to call, nothing to register. So
+"keep cases in our own store" (finding 2.a) and "use Mastra's runner" were never
+alternatives — v2.0 invented the choice, and the library does not pose it.
+
+**Storage is optional.** `const mastra = target.getMastraInstance?.() ||
+target.mastra; const storage = mastra?.getStorage();`, and every persist path is
+guarded `if (storage)`. No Mastra instance, no LibSQL, one database — which is
+what findings 2.a and 6.b asked for, now verified instead of assumed. Results
+persist to our own SQLite from `onItemComplete`.
+
+**The scorers already fit.** `src/eval/scorers/index.ts` exports `GATES`,
+`SCORERS` and `HARNESS_SCORERS`, which is the exact shape
+`runEvals({ gates, scorers })` consumes. §2.2 built them compatible without
+anyone wiring them.
+
+What this file owns, because Mastra does not:
+
+- **Three runs per cell, and variance — not just means.** Claude picked Tiffany
+  on one run and Ingmar on two others from identical input. A single run per
+  cell reports that as a difference between models.
+- **An unscoreable run is not a zero.** `runEvals` catches a throwing gate and
+  pushes `0` for it. That is precisely the mistake this project has paid most
+  for: seven reported model failures in one afternoon were all harness faults.
+  `UnscoreableRun` must be caught before it reaches a gate and recorded as
+  *unscoreable*, never averaged in as a failure. **This is the most important
+  requirement in §2.3**, and it is the one thing Mastra's default gets wrong for
+  this project.
+- **Replay.** `collectToolMocks`, imported from `@mastra/core/evals` — note the
+  path, it is not under `@mastra/evals/scorers/utils` where finding 2.d implied
+  it lived. A graded run then costs no Apify spend and survives an outage.
+- **Refusal over a table with holes in it.** Fewer cases than `validateCases()`
+  accepts, or an unconfigured provider, stops that cell with a stated reason.
+
+`concurrency` defaults to 1 and **stays 1 for ollama**: a 13k prompt into a 4k
+window across four parallel slots is a recorded harness fault, not a hypothesis.
+
+`rightPerson(model)` is a factory rather than a scorer instance. The runner
+constructs it with the judge model and passes the case only through
+`judgeContext`, so the judge stays blind by construction.
 
 ### 2.4 Outcome capture
 
@@ -143,7 +199,9 @@ surface a degraded actor in `npm run status`; pass that fact to the agent so
 
 ## 3. Tests
 
-Baseline **29**; target **~50**.
+*v2.1: the v2.0 baseline of 29 is long stale — the suite is at **212** as of
+2026-09-06, and the quoted test glob that made 31 of them run again is itself a
+§2.2 side-effect. Baseline **212**; §2.3 and §2.4 together target **~230**.*
 
 - `scorers/*.test.ts` (~12): each deterministic scorer against fixtures,
   including a `nobody_findable` case where committing anyone must fail.
@@ -158,13 +216,33 @@ of agreement with Mahi, which the case set measures.
 
 ## 4. Sequence
 
-1. `git checkout -b feat/eval-harness`
-2. §2.5 fixes — small, and they change what every later run reports
-3. §2.1 `prepare-cases.ts`, hand the sheet to Mahi
-4. §2.2 scorers while the sheet is being filled
-5. §2.3 experiment runner
-6. §2.4 outcome capture
-7. `npm test`, `npm run typecheck`, journal in the same commit, push
+*v2.1: annotated with what actually happened. The sprint stopped after step 4,
+and steps 5-6 were displaced by six PRs of roles, grouping and paid-discovery
+work. Some of that was forced — Bjak was about to take eight queue slots and
+eight paid lookups for one job — but **no decision to reorder was ever
+recorded**, and the plan went on claiming §2.3 was next. Recording it here is
+the point of this line.*
+
+| # | Step | Status |
+|---|---|---|
+| 1 | `git checkout -b feat/eval-harness` | done |
+| 2 | §2.5 fixes | done |
+| 3 | §2.1 `prepare-cases.ts`, hand the sheet to Mahi | **generator built; sheet never graded — `data/cases/` does not exist** |
+| 4 | §2.2 scorers | done, three deviations unratified |
+| 5 | §2.3 experiment runner | not started |
+| 6 | §2.4 outcome capture | not started |
+
+Revised order from here, per Mahi 2026-09-06 — **§2.4 before §2.3**, inverting
+v2.0. §2.4 is the one that is worthless retroactively: every day without outcome
+capture is evidence that cannot be recovered, and it is the cheaper of the two.
+§2.3 cannot produce a number until §2.1 is graded regardless, and §2.1's long
+pole is twenty minutes of Mahi's time, not code.
+
+1. **§2.4 outcome capture** — branch `feat/outcome-capture`
+2. **§2.1 graded case set** — in parallel; `cases:prepare` SPENDS and needs
+   explicit approval as a paid call
+3. **§2.3 experiment runner**, as amended above
+4. `npm test`, `npm run typecheck`, journal in the same commit, push
 
 ## 5. Done when
 
@@ -326,3 +404,204 @@ are listed first in §7.11.
 | 4.a | §2.1, §2.4 | Gitignore `data/cases/`; note third-party personal data in the schema |
 | 6.b | §2.3 | If LibSQL lands, separate file, and state that eval state is disposable |
 | 8.b | §3 | Test that `uncheckable` scores as no-score, never zero |
+
+---
+
+## 8. v2.1 10-dimension stress-test absorption notes
+
+All 10 walked against the amended §2.3 and the plan as it now stands. 27
+findings, 12 actionable. Three change the plan materially and are listed first
+in §8.12.
+
+### 8.1 Coverage gap rationale
+
+v2.0 walked all 10, so there is no dimension debt to repay. What v2.0 did *not*
+do is verify the APIs it named — every §2.3 claim was asserted, none checked.
+That is a #2 failure, and it is why v2.0's §2.3 could not have been built as
+written. This pass reads the installed packages rather than the plan's claims.
+
+### 8.2 #1 Edge cases (4 findings, 3 actionable)
+
+- 1.a: `runEvals` takes `concurrency`, defaulting to 1. Raising it for speed
+  risks reproducing a recorded harness fault — a 13k prompt into a 4k window
+  across four parallel slots produced zero tool calls in 308s and was reported
+  as a model failure. **ACTIONABLE §2.3** — pin `concurrency: 1` for ollama and
+  say why in the code.
+- 1.b: a run that throws (`ActorBlockedError` on an exhausted Apify tier) is not
+  a score of zero. `runEvals` wraps each gate in try/catch and pushes `0` on
+  throw (`warnGateFailure`). A quota message therefore becomes a model failure —
+  the exact class of error this project has lost the most time to.
+  **ACTIONABLE §2.3**, and recorded there as the section's most important
+  requirement.
+- 1.c: zero graded cases, or fewer than `validateCases()` accepts. The runner
+  must refuse with a reason rather than print an empty table. **ACTIONABLE §2.3.**
+- 1.d: a provider named on the CLI but not configured (`cerebras` with no key)
+  must fail that cell, not the whole matrix. **ACTIONABLE §2.3.**
+
+### 8.3 #2 Unverified assumptions (6 findings, 4 actionable)
+
+The dimension that carried this amendment. Every item below was checked against
+the installed packages by importing them, not by reading documentation.
+
+- 2.a **CORRECTED**: v2.0 §2.3 specified `dataset.startExperiment()`. **No such
+  export exists** at `@mastra/core` 1.64.0 or `@mastra/evals` 1.10.0 — no
+  `dataset`, no `Dataset`, no `startExperiment` on any probed entry point. v2.0
+  §2.3 was unbuildable as written. **ACTIONABLE §2.3** — done, rewritten.
+- 2.b **VERIFIED, and it dissolves the contradiction**: `runEvals` *does* exist,
+  in `@mastra/core/evals`, as
+  `runEvals({ data, scorers, gates, target, targetOptions, onItemComplete, concurrency })`.
+  `data` is a plain array iterated with `pMap` — no Dataset required. Keeping
+  cases in our own store and using Mastra's runner were never alternatives.
+  **ACTIONABLE §2.3** — done.
+- 2.c **VERIFIED**: storage is optional throughout —
+  `target.getMastraInstance?.() || target.mastra`, then `mastra?.getStorage()`,
+  and every persist is guarded `if (storage)`. Findings 2.a and 6.b of v2.0
+  (no LibSQL, one database) hold, now on evidence rather than preference.
+  (no action — recorded in §2.3.)
+- 2.d **VERIFIED, path corrected**: `collectToolMocks` exists, but in
+  `@mastra/core/evals`, not `@mastra/evals/scorers/utils` where v2.0's finding
+  2.d implied it sat. **ACTIONABLE §2.3** — done.
+- 2.e **[Mahi-verify] at build time**: trajectory-type *gates* resolve through
+  `resolveTrajectory(storage, ...)`, and `runScorers` also receives `storage`.
+  Our trajectory scorer sits in `SCORERS`, not `GATES`, so it is probably
+  unaffected — but "probably" is what this dimension exists to catch. If
+  trajectory scoring turns out to require storage, that is the single legitimate
+  reason to stand up LibSQL, and it reopens finding 2.a. Verify before wiring.
+- 2.f: `docs/architecture.md` draws `runEvals(target, data)` — two positional
+  arguments. The real signature is one config object. Directionally right,
+  literally wrong, and it is the doc a reader trusts. **ACTIONABLE** — correct
+  it in the §2.3 build commit, not here.
+
+### 8.4 #3 Actual code checks (6 findings, 1 actionable)
+
+Every claim below verified by reading the file, per the anti-pattern about
+config-level spot-checks.
+
+- 3.a ✓ VERIFIED: `src/eval/scorers/index.ts:284-295` already exports
+  `GATES = [noFabrication, grounded]`, `SCORERS = [answered, rightContact]` and
+  `HARNESS_SCORERS = [evidenceUsable]` — the exact shape `runEvals` consumes.
+  §2.2 built them compatible with a runner nobody had wired.
+- 3.b ✓ VERIFIED: `loadCases()`, `saveCases()`, `validateCases()` and
+  `CASES_PATH` all exist in `src/eval/cases.ts`. `CASES_PATH` defaults to
+  `data/cases/cases.json`, overridable by `JOB_AGENT_CASES`.
+- 3.c ✓ VERIFIED, and it is the blocker: **`data/cases/` does not exist.** Zero
+  graded cases. Nothing in §2.3 can produce a number until §2.1 is done.
+- 3.d ✓ VERIFIED: `src/agent/run.ts:106` `runOne(job, provider)` drives
+  `agent.generate(enrichGoal(job), { maxSteps })` and returns a `RunRecord`. It
+  is the basis for a `runEvals` target but is not shaped as one today.
+- 3.e ✓ VERIFIED: `ProviderName = 'anthropic' | 'ollama' | 'cerebras'`
+  (`src/ai/index.ts:16`), so §5's `--providers anthropic,cerebras` is valid.
+- 3.f: `rightPerson(model)` (`src/eval/scorers/judged.ts:90`) is a factory, not
+  a scorer instance, and `judgeContext(c)` is the only path a case reaches it by.
+  The runner must construct it rather than import it. **ACTIONABLE §2.3** —
+  recorded, and it is what keeps the judge blind.
+
+### 8.5 #4 Security (4 findings, 1 actionable)
+
+- 4.a ✓ VERIFIED: `.gitignore:23` is `data/`, so `data/cases/` is covered. Cases
+  carry third-party personal data — real names and profile URLs of people who
+  did not consent.
+- 4.b: replay fixtures produced by `collectToolMocks` contain the same personal
+  data as the runs they record. **ACTIONABLE §2.3** — they live under `data/`,
+  never in the repo, never exported, and the plan says so rather than assuming
+  a reader infers it.
+- 4.c ✓ VERIFIED: no new dependency. `@mastra/core` is already present and
+  already imported by the scorers. No `npm audit` surface change.
+- 4.d ✓ VERIFIED: no secret reaches the experiment output. Provider selection is
+  by name; keys stay in env and are never part of a result row.
+
+### 8.6 #5 Vision alignment (3 findings, 0 actionable)
+
+- 5.a ✓ ALIGNED: §2.3 is the only thing that answers the question `vision.md`
+  calls the bet worth testing — whether a small model can do this judgement —
+  and whose stated unacceptable outcome is not knowing.
+- 5.b ✓ ALIGNED: no send path. The runner reads cases and drives the enrich
+  agent; the terminal state is untouched.
+- 5.c ✓ ALIGNED: replay means a graded run costs no Apify spend after the first
+  recording, which honours "cost is visible before it is spent".
+
+### 8.7 #6 Architecture consistency (4 findings, 1 actionable)
+
+- 6.a ✓ ALIGNED: `src/eval/experiment.ts` sits beside `cases.ts` and `scorers/`,
+  matching its sister modules.
+- 6.b ✓ RESOLVED: v2.0 finding 6.b said "if LibSQL lands, separate file". It
+  does not land. Verified at 2.c.
+- 6.c ✓ ALIGNED: `CLAUDE.md` says `poll.ts` is the only orchestrator and
+  everything else is a library it calls. `experiment.ts` is a CLI driver like
+  `roles.ts` and `agent/run.ts`, not a second orchestrator of the poll path.
+- 6.d: `runOne()` in `agent/run.ts` and the §2.3 target will both construct the
+  enrich agent. Duplicating that is a DRY violation on the most load-bearing
+  object in the system. **ACTIONABLE §2.3** — extract one driver, and let
+  `npm run agent` and the experiment share it.
+
+### 8.8 #7 Impact on other features (4 findings, 1 actionable)
+
+**State-machine sub-analysis: NOT TRIGGERED.** §2.3 adds no state, increases
+traffic into no state, and writes no `jobs.state`. §2.4 does all three — it
+retires `sent` from the enum — and gets its own triggered pass in its own
+session. Documented here so the skip is deliberate rather than forgotten.
+
+- 7.a ✓ VERIFIED: no `jobs.state` write in §2.3.
+- 7.b: `npm run agent -- <id>` shares the agent construction that 6.d proposes
+  refactoring. That is the regression surface of this sprint step.
+  **ACTIONABLE §2.3** — the extraction lands with tests, not after them.
+- 7.c ✓ VERIFIED against `package.json`: an `experiment` script collides with
+  nothing (`poll`, `poll:once`, `queue`, `cases:prepare`, `cases:check`,
+  `agent`, `status`, `explain`, `sources`, `connections`, `test`, `typecheck`,
+  `roles`).
+- 7.d ✓ VERIFIED: `prepare-cases.ts` spends, and stays an approval-gated act.
+  §2.3 itself spends nothing once replay exists.
+
+### 8.9 #8 Test coverage (3 findings, 1 actionable)
+
+- 8.a: §3 claimed a baseline of 29. Actual is **212**. **ACTIONABLE §3** — done.
+- 8.b: the runner's own tests must not call a model. Aggregation, variance
+  arithmetic, the unscoreable path and refusal-on-empty-case-set are all
+  testable against fixtures. **ACTIONABLE §2.3** — spelled out at build time.
+- 8.c ✓ VERIFIED: the `npm test` glob is still quoted
+  (`node --import tsx --test 'src/**/*.test.ts'`). Any test nested two levels
+  deep — which is where the scorer tests live — only runs because of it.
+
+### 8.10 #9 Deployment & rollback (2 findings, 0 actionable)
+
+- 9.a ✓ no deployment surface. This is a branch, a review and a merge. §2.3
+  changes no schema, so rollback is reverting the commit.
+- 9.b: §2.4 adds an `outcomes` table and changes `JOB_STATES`, which does have a
+  rollback story. Verified today that `sent`, `enriched` and `queued` hold
+  **zero rows**, so that migration is additive against live data — but it
+  belongs to §2.4's own pass, not this one.
+
+### 8.11 #10 Risks (4 findings, 2 actionable)
+
+- 10.a: `runEvals` is Mastra's, so its behaviour can change under us on upgrade.
+  Accepted, and preferred to the alternative: two of the day's six harness bugs
+  in September came from reverse-engineering Mastra's internals rather than
+  consuming its output. Mitigation is pinned versions, which `package.json`
+  already does.
+- 10.b: **the highest risk in this sprint is a harness fault scored as a model
+  failure**, and `runEvals`' default gate handler does exactly that (1.b).
+  Blast radius: a wrong answer to the only question the sprint exists to ask.
+  **ACTIONABLE §2.3**, highest priority within it.
+- 10.c: ten cases is small. Inherited from v2.0 §6 and still accepted — it
+  catches large regressions and misses subtle ones, and growing it is cheap once
+  the runner exists.
+- 10.d **[Mahi-verify]**: the three §2.2 deviations remain unratified. §2.3
+  wires `GATES` and `SCORERS` in the shape deviation (2) created, so a rejection
+  changes §2.3. **Blocks locking this plan**, not drafting it.
+
+### 8.12 Net v2.1 changes
+
+| Finding | Plan section updated | Change |
+|---|---|---|
+| 2.a / 2.b | §2.3 | `dataset.startExperiment()` does not exist; `runEvals` does, and takes a plain array. Section rewritten around it |
+| 1.b / 10.b | §2.3 | Unscoreable must not be scored as zero — named as the section's most important requirement, against Mastra's default |
+| 4 (seq) | §4 | §2.4 now precedes §2.3 per Mahi; the unrecorded reorder across PRs #9-#14 is written down |
+| 2.c | §2.3 | Storage optional, verified — no LibSQL, one database, upholding v2.0 finding 2.a |
+| 2.d | §2.3 | `collectToolMocks` import path corrected to `@mastra/core/evals` |
+| 1.a | §2.3 | `concurrency` pinned to 1 for ollama, with the reason |
+| 1.c / 1.d | §2.3 | Refuse an ungradeable case set or an unconfigured provider, with a reason |
+| 3.f | §2.3 | `rightPerson` is a factory; runner constructs it, judge stays blind |
+| 6.d / 7.b | §2.3 | Extract one agent driver shared by `npm run agent` and the experiment |
+| 4.b | §2.3 | Replay fixtures carry personal data; live under `data/`, never exported |
+| 8.a | §3 | Test baseline 29 → 212 |
+| 2.e / 10.d | — | `[Mahi-verify]`: trajectory-and-storage at build time; the three §2.2 deviations before this plan locks |

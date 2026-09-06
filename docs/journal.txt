@@ -1551,3 +1551,81 @@ FLAGGED, NOT FIXED, in the order I would take them
   4. The eval case set. Easier and more meaningful once (1) is done.
 
 Tests: 212, unchanged by this entry. No code.
+
+
+2026-09-06  Sprint 1 plan v2.1 — the runner was specified against an API that
+            does not exist
+------------------------------------------------------------------------------
+DRAFT, awaiting ratification. No code.
+
+Mahi asked what happened to the Mastra refactor and to evals. Both answers are
+in the record and neither is what I said first.
+
+THE REFACTOR WAS DONE. 2026-09-04 audited Mastra at ~30% used, deleted the
+hand-rolled src/enrich/ loop and its 13 tests, and moved to Agent, createTool
+and MCPClient; §2.2 then took createScorer plus the prebuilt trajectory and
+rubric scorers. Mastra Datasets, Experiments and Storage were DECLINED, on
+purpose, at sprint-01-plan.md finding 2.a: "keep cases in our store and use only
+createScorer — fewer moving parts, one database". I described that decision as
+drift in-session before checking. It was a decision.
+
+WE NEVER REACHED EVALS. Steps 5 and 6 of a 6-step sequence — the experiment
+runner and outcome capture — were never started. Six PRs of roles, grouping and
+paid discovery went in instead. Some of that was forced; Bjak was about to take
+eight queue slots and eight paid lookups for one job. But no decision to reorder
+was recorded anywhere, and the plan kept claiming §2.3 was next. v2.1 writes it
+down, which is the only thing that stops it recurring.
+
+AND THEN THE THING THIS AMENDMENT IS ACTUALLY FOR. §2.3 said "src/eval/
+experiment.ts wrapping dataset.startExperiment()". That export does not exist —
+not in @mastra/core 1.64.0, not in @mastra/evals 1.10.0, not on any entry point
+I probed. v2.0 asserted an API and nobody imported it. Every §2.3 claim was
+assertion; this pass imported the packages instead of reading the docs.
+
+What is actually there is better than what was planned:
+
+  runEvals({ data, scorers, gates, target, targetOptions, onItemComplete,
+             concurrency })                              @mastra/core/evals
+
+  data is a PLAIN ARRAY, iterated with pMap. No Dataset to construct.
+  Storage is OPTIONAL — target.getMastraInstance?.() || target.mastra, then
+  mastra?.getStorage(), and every persist is guarded `if (storage)`.
+
+So the contradiction I opened this session by flagging — "use Mastra Datasets"
+versus "keep one database" — does not exist in the library. v2.0 invented the
+choice. Keeping cases in our own store and using Mastra's runner are the same
+plan. And src/eval/scorers/index.ts already exports GATES, SCORERS and
+HARNESS_SCORERS, which is exactly the shape runEvals consumes: §2.2 built them
+compatible with a runner nobody had wired.
+
+collectToolMocks exists too, so replay is buildable — but in @mastra/core/evals,
+not @mastra/evals/scorers/utils where finding 2.d implied it lived.
+
+THE FINDING THAT MATTERS MOST. runEvals wraps each gate in try/catch and pushes
+0 when one throws. An exhausted Apify tier raises ActorBlockedError, and under
+that default it would be averaged in as a model failure. That is the single
+mistake this project has paid the most for — seven reported model failures in
+one afternoon, all of them harness faults. §2.3 now names "an unscoreable run is
+not a zero" as its most important requirement, and it is the one place Mastra's
+default is wrong for this system.
+
+Ten dimensions walked, 27 findings, 12 actionable, notes in §8. Two
+[Mahi-verify] remain: whether trajectory scoring needs storage (verify before
+wiring, and if it does, finding 2.a reopens), and the three §2.2 deviations that
+have been pending ratification since the day they shipped.
+
+Also corrected: §3 claimed a test baseline of 29. It is 212. And
+docs/architecture.md draws runEvals(target, data) as two positional arguments;
+it takes one config object. That correction lands with the §2.3 build commit,
+not this one.
+
+Sequence from here, per Mahi: §2.4 outcome capture first — it is the one that is
+worthless retroactively — then §2.1 graded cases (twenty minutes of his time and
+a paid call), then §2.3.
+
+Files
+  docs/sprint-01-plan.md   v2.1: §2.3 rewritten, §2.2 status, §3 baseline,
+                           §4 sequence, new §8 absorption notes  (329 -> 607)
+  docs/journal.txt         this entry
+
+Tests: 212, unchanged. No code.
