@@ -1790,3 +1790,84 @@ Files
   package.json              npm run repair
 
 Tests: 212 -> 227. typecheck clean.
+
+
+2026-09-06 (cont.)  Two plans: the representative election, and closing the
+                    learning loop
+------------------------------------------------------------------------------
+DRAFT, awaiting ratification. No code.
+
+Both stress-tested across 10 dimensions. Kept separate because they touch
+different surfaces and carry different risk, and one session should be
+reviewable in twenty minutes.
+
+PLAN 1 — REPRESENTATIVE ELECTION. poll.ts groups only the survivors of the
+current pass and elects among those, and no path in poll.ts demotes an existing
+scored row. So a role gains one representative per pass in which it gains a
+posting. It stayed hidden because it needs two conditions at once — a role that
+already exists AND a new posting joining it — and both free boards were stable
+for weeks. Paid discovery turning on brought three BJAK postings into roles
+Ashby had already created, and that was the second condition.
+
+The fix is not a merge, it is a deletion: roles.ts backfill already elects
+correctly and poll.ts has a weaker second copy of the same rule. Two copies is
+how they drift, and this one drifted into a bug. One pure elect() in
+src/roles/elect.ts, two callers.
+
+  #2.b caught the trap. JobPosting.postedAt is camelCase; RolePosting.posted_at
+  is snake. Handing both to one sort silently reads undefined and every date
+  becomes 0 — the same shape as reading `headline` from a source that returns
+  `summary`. elect() takes a normalised Candidate and both callers map into it
+  explicitly.
+
+  #10.a added a rule that was not in the brief. Once poll can demote, a
+  representative can change on an ordinary pass — and two postings that tie
+  would swap the slot every pass, reshuffling the queue daily for no reason a
+  reader can see. INCUMBENCY NOW WINS TIES. A challenger takes the slot only by
+  being strictly better.
+
+  #10.b is honest and unfixable here: the contacted protection only knows about
+  RECORDED outreach. Message somebody without typing --sent and that posting is
+  demotable. Named as accepted rather than papered over.
+
+PLAN 2 — LEARNING LOOP. Three gaps, each verified in source:
+
+  record_contact (tools/index.ts:276) calls recordContact and never
+  recordDecision. It already collects input.reasoning — "why this person rather
+  than the others" — and drops it.
+
+  record_no_contact (:342) calls ONLY ctx.onFinish, an in-memory callback. Not a
+  contact row, not a decision row, nothing. A run that correctly concluded a
+  company has nobody approachable is, after the process exits, indistinguishable
+  from a run that never happened. That is worse than I had described it.
+
+  recordCorrection is called from tests only. There is no command, no flag.
+
+  #2.c is the one that would have bitten: EnrichToolContext has no decider. A
+  decision written without one cannot serve the model comparison the whole eval
+  effort exists to run. One field through one call, but invisible until you read
+  the interface.
+
+  #6.b is the load-bearing design choice: the decision subject is the ROLE ID,
+  not the job id. correctionsFor does a LIKE prefix match and a role id starts
+  with the company, so "at this company the recruiter is never the right
+  contact" generalises to every future role there. A job id generalises to
+  nothing — the posting is gone in a month.
+
+  #10.b names the failure mode to avoid: recording without feeding back is a
+  growing table nobody reads. Step 5 is not optional and lands in the same
+  session.
+
+  #7.a, easy to miss: enrichGoal gains an argument and the §2.3 experiment
+  runner will call it. Corrections default to EMPTY there — an eval that reads
+  whatever Mahi typed last week is not a controlled comparison.
+
+Neither plan spends anything. Plan 2's tool changes are testable with a
+fabricated context against a temp database; no agent run, no Apify call.
+
+Files
+  docs/representative-election-plan.md  (new) 26 findings, 11 actionable
+  docs/learning-loop-plan.md            (new) 29 findings, 13 actionable
+  docs/journal.txt                      this entry
+
+Tests: 227, unchanged. No code.
