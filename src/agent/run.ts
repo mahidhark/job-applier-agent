@@ -17,7 +17,8 @@
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { loadConfig } from '../config-file.js';
-import { q, recordContact } from '../store/db.js';
+import { q, recordContact, roleOf, correctionsFor } from '../store/db.js';
+import { modelLabel } from './model.js';
 import type { ProviderName } from '../ai/index.js';
 import type { JobPosting } from '../sources/types.js';
 import { buildEnrichAgent, enrichGoal } from './enrich-agent.js';
@@ -123,14 +124,54 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
   };
 
   try {
+    // WHAT A RECORDED JUDGEMENT IS ABOUT.
+    //
+    // The subject is the ROLE ID, not the job id. `correctionsFor` does a LIKE
+    // prefix match and a role id starts with the company, so "at this company
+    // the recruiter is never the right contact" reaches every future role
+    // there. A job id generalises to nothing — the posting is gone in a month.
+    //
+    // A posting with no role_id falls back to its own id rather than throwing.
+    // Everything `scored` is grouped today, but that is a property of the
+    // current store, not an invariant anything enforces.
+    const role = roleOf(job.id);
+    const subject = role?.id ?? job.id;
+
+    // `modelLabel` rather than the `label` returned below: the tool context has
+    // to exist before buildEnrichAgent is called, and a decision without a
+    // decider cannot serve a model comparison.
+    const decider = modelLabel(config.ai, provider);
+
     const { agent, label, toolNames, providerOptions } = buildEnrichAgent({
       config: config.ai,
       provider,
-      toolContext: { jobId: job.id, transcript, charge, onFinish: (o) => { committed = o; } },
+      toolContext: {
+        jobId: job.id, transcript, charge,
+        onFinish: (o) => { committed = o; },
+        decision: {
+          decider,
+          subject,
+          // The four identifying fields, NOT the raw posting. A decision is a
+          // judgement record, not an archive, and the description would drag
+          // three thousand characters into every row.
+          context: {
+            title: job.title,
+            company: job.company,
+            companyLinkedinUrl: job.companyLinkedinUrl,
+            posterName: job.contactName,
+          },
+        },
+      },
     });
     const known = new Set(toolNames);
 
-    const res = await agent.generate(enrichGoal(job), {
+    // WHAT I HAVE BEEN TOLD BEFORE. Reading these is what makes the loop a
+    // loop rather than a write-only log — the same pattern taxonomy.ts uses.
+    const lessons = correctionsFor('contact', subject)
+      .map((d) => d.correction_note?.trim())
+      .filter((n): n is string => Boolean(n));
+
+    const res = await agent.generate(enrichGoal(job, lessons), {
       maxSteps: MAX_STEPS,
       ...(Object.keys(providerOptions).length ? { providerOptions } : {}),
       onStepFinish: (step: unknown) => {

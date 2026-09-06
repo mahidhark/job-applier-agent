@@ -1930,3 +1930,70 @@ Files
   CLAUDE.md                the one-representative invariant
 
 Tests: 227 -> 244. typecheck clean.
+
+
+2026-09-06 (cont.)  The learning loop closes — and the prompt was about to lie
+                    about its own evidence
+------------------------------------------------------------------------------
+Plan 2 built. The agent now records what it judged, Mahi can say it was wrong,
+and the next run at that company is told.
+
+  record ──▶ correct ──▶ feed back ──▶ record
+
+WHAT WAS ACTUALLY BROKEN, all three verified in source before writing anything:
+
+  record_contact collected input.reasoning — "why this person rather than the
+  others" — and threw it away. The only gradeable artefact a run produces.
+
+  record_no_contact called ONLY ctx.onFinish, an in-memory callback. Not a
+  contact row, not a decision row, nothing. After the process exited, a run
+  that correctly concluded a company has nobody approachable was
+  indistinguishable from a run that never happened. Worse than I had described
+  it when I first raised it.
+
+  recordCorrection was called from tests only. No command, no flag.
+
+#2.c would have bitten and was invisible from outside: EnrichToolContext had no
+decider, and run.ts builds the tool context BEFORE buildEnrichAgent returns the
+label — circular. Fixed by calling modelLabel() directly, which is what
+buildEnrichAgent does internally anyway.
+
+MAHI RESOLVED THE OPEN QUESTION: --unwrong ships alongside, and it RETRACTS
+rather than deletes. A retracted_at column, nullable, via the existing addColumn
+pattern; correctionsFor filters on it. The row stays because decisions is the
+audit trail every improvement path reads, and "I judged X, corrected to Y, then
+withdrew it" is more information than the row never existing. Correcting again
+un-retracts: saying it twice is meaning it.
+
+AND THE TEST FOUND SOMETHING I WAS ABOUT TO SHIP AS A LIE. correctionsFor
+returns same-subject corrections AND the most recent corrections from anywhere
+— by design, and how taxonomy.ts already uses it, because "the recruiter posts
+these" is usually general. My prompt heading said "WHAT I HAVE BEEN TOLD BEFORE
+about this company", which would be FALSE for the second group. A prompt that
+misdescribes its own evidence is how a model learns to distrust it. Now reads
+"from earlier corrections".
+
+The same discovery made three of my tests wrong: they counted rows returned by
+correctionsFor, which is testing the wrong thing. They assert on the note now.
+
+#7.a, easy to miss and now covered by a test: enrichGoal's corrections argument
+DEFAULTS TO EMPTY. The §2.3 experiment runner will call it, and an eval that
+silently reads whatever was typed last week grades two providers against
+different prompts and blames the models for the difference.
+
+Smoke-tested the CLI against a throwaway store: --wrong without a note refuses
+with the reason; --wrong with one notes it against the role; --unwrong
+withdraws; an unknown id refuses.
+
+Files
+  src/store/db.ts             retracted_at, latestDecisionFor,
+                              retractCorrection; corrections now APPEND
+  src/agent/tools/index.ts    both commit tools record a decision;
+                              EnrichToolContext gains `decision`
+  src/agent/run.ts            threads decider + role subject; reads corrections
+  src/agent/enrich-agent.ts   enrichGoal renders them, capped and collapsed
+  src/queue.ts                --wrong / --unwrong
+  src/store/learning.test.ts  (new) 15 tests
+  CLAUDE.md                   the loop, the subject rule, the retract rule
+
+Tests: 244 -> 259. typecheck clean. No spend.

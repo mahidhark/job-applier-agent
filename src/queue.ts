@@ -5,6 +5,10 @@
  *   npm run queue -- --sent <id>  mark one as contacted, by hand
  *   npm run queue -- --skip <id>  drop one without contacting
  *
+ *   --accepted / --replied / --declined <id>   what happened after
+ *   --wrong <id> --note "why"                  the contact it picked was wrong
+ *   --unwrong <id>                             withdraw that correction
+ *
  * The agent stops at `queued` on purpose. Sending a connection request or a
  * message from automation is against LinkedIn's terms and puts the account
  * that carries your professional history at risk — and it is the one step in
@@ -13,6 +17,7 @@
  */
 import {
   q, setState, postingsInRole, recordOutcome, jobExists, outcomesFor,
+  roleOf, latestDecisionFor, recordCorrection, retractCorrection,
   type OutcomeEvent,
 } from './store/db.js';
 import { qualifierOf } from './roles/key.js';
@@ -44,6 +49,64 @@ function contactUrlFor(jobId: string, override?: string): string | null {
     rows.map((r) => `    --contact ${r.profile_url}`).join('\n') + '\n',
   );
   return null;
+}
+
+/**
+ * Tell the system the contact it chose was wrong, and why.
+ *
+ * Here rather than in a command of its own, because the correction is worth
+ * having only if it gets typed, and this is where Mahi already is when he
+ * notices. A separate CLI is one he would have to remember exists.
+ *
+ * THE NOTE IS REQUIRED, and this one does refuse — unlike `--declined`, which
+ * prompts and proceeds. The asymmetry is deliberate: a decline with no note
+ * still records that they said no, which is worth having on its own. A
+ * correction with no note records nothing a future prompt can use, so refusing
+ * loses nothing.
+ */
+const wrong = flag('--wrong');
+const unwrong = flag('--unwrong');
+
+for (const [id, retract] of [[wrong, false], [unwrong, true]] as const) {
+  if (!id) continue;
+  if (!jobExists(id)) {
+    console.error(`\n  no posting with id ${id}.\n`);
+    process.exit(1);
+  }
+
+  // The judgement is filed against the ROLE, not the posting, so a lesson
+  // reaches every future role at the company rather than dying with this ad.
+  const subject = roleOf(id)?.id ?? id;
+  const decision = latestDecisionFor('contact', subject);
+  if (!decision) {
+    console.error(
+      `\n  no contact judgement recorded for ${id}.\n` +
+      `  Nothing has been enriched for this role yet, or it was enriched before\n` +
+      `  decisions were recorded. Nothing to correct.\n`,
+    );
+    process.exit(1);
+  }
+
+  if (retract) {
+    retractCorrection(decision.id);
+    console.log(`\n  withdrawn. The row stays on the record; it stops being taught.\n`);
+    process.exit(0);
+  }
+
+  const note = flag('--note');
+  if (!note || !note.trim()) {
+    console.error(
+      `\n  --wrong needs --note "why".\n` +
+      `  The note is the part that generalises: "the recruiter posted it; the Head\n` +
+      `  of Product owns the team" reaches every future role at this company. A\n` +
+      `  correction without one teaches nothing.\n`,
+    );
+    process.exit(1);
+  }
+
+  recordCorrection(decision.id, { rejected: JSON.parse(decision.chose) as unknown }, note.trim());
+  console.log(`\n  noted against ${subject}. The next run here will be told.\n`);
+  process.exit(0);
 }
 
 const skip = flag('--skip');
