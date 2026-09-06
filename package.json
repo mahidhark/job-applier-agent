@@ -21,7 +21,8 @@
     "connections": "tsx --env-file-if-exists=.env src/agent/connections-probe.ts",
     "test": "node --import tsx --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
-    "roles": "tsx --env-file-if-exists=.env src/roles.ts"
+    "roles": "tsx --env-file-if-exists=.env src/roles.ts",
+    "repair": "tsx --env-file-if-exists=.env src/store/repair.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.49",

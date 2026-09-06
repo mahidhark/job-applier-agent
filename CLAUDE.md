@@ -12,6 +12,8 @@ npm run poll -- --once   # one ingest + screen pass, then exit
 npm run poll             # the loop
 npm run status           # states, rejection reasons, spend
 npm run queue            # today's outreach list
+npm run queue -- --sent <id>      # and --accepted --replied --declined
+npm run repair           # DRY RUN: the two one-shot live-data repairs
 npm run explain -- <id>  # why one posting was skipped, or never seen
 npm run agent -- <id>    # find the contact for one posting (SPENDS)
 npm run cases:prepare    # build the eval grading sheet (SPENDS)
@@ -71,8 +73,9 @@ Full picture in [docs/architecture.md](docs/architecture.md).
 ## The rule that shapes the design
 
 **Nothing in this repo contacts a person.** No send path, no LinkedIn write,
-no application submission. The terminal state is `queued`; a human moves it to
-`sent`. This is not a TODO — it is the reason the project is safe to run
+no application submission. The machine's last word is `scored`; everything
+after contact is a human typing `npm run queue -- --sent <id>`, and lives in
+`outcomes`. This is not a TODO — it is the reason the project is safe to run
 unattended. Do not add a send step, and do not add a dependency that could
 become one, without an explicit decision from Mahi recorded in the journal.
 
@@ -109,19 +112,36 @@ is why `BLOCKING_STATUS` matches a pattern rather than a string.
 
 **A role is not a posting, and the queue counts roles.** One job is advertised
 many times — per market, per product line, and under different brands of the
-same parent. 38 live postings are 12 roles. The extra listings sit in `variant`
+same parent. 63 live postings are 21 roles. The extra listings sit in `variant`
 and are shown under their role rather than competing for a queue slot.
 
 **Grouping uses a model; screening does not.** Not a contradiction of the rule
 above: screening runs over every posting ever seen and must stay free and
-auditable, while grouping runs over the ~38 survivors and asks something no
+auditable, while grouping runs over the ~63 survivors and asks something no
 rule can answer. The judgement is made **once per company** and cached in
 `company_units`; `poll` only ever reads it, so an unattended run is never
 blocked or billed by it.
 
-**`enriched` and `queued` are declared in `JOB_STATES` and never written.**
-Nothing sets them. `queue.ts` selects on all three and works only because of
-`scored`. Do not write logic that waits on either without setting it first.
+**`jobs.state` is what the machine decided; `outcomes` is what happened with a
+human.** One authority each, and they never share a column. `enriched`,
+`queued` and `sent` used to be in `JOB_STATES` — the first two declared and
+never written by anything, the third recording a human action in a machine's
+enum. Both removed facts stay derivable: enrichment is a `contacts` row,
+queued is `state = 'scored'` with no `outcomes` row. There is a test asserting
+`JOB_STATES`, because nothing referenced those three in any test and that is
+how two of them stayed dead for the life of the enum.
+
+**Removing a state is only half-caught by the compiler.** `setState` is typed,
+so call sites fail the build — but `queue.ts` and `roles.ts` carried states as
+**SQL string literals**, which `tsc` cannot see. Grep the strings; do not trust
+a green typecheck.
+
+**Work already started outranks anything, and that fact lives in `outcomes`.**
+`roles.ts` backfill never demotes a posting somebody has been contacted about,
+because demoting it drops the role out of the queue while its outcome row hangs
+off a posting nothing reads. This used to key on the `sent` state; deleting
+that state without moving the rule would have removed the protection silently,
+with no test failing.
 
 **An unscoreable run is not a zero.** `src/eval/scorers/` throws
 `UnscoreableRun` when evidence tools were called and returned nothing, rather

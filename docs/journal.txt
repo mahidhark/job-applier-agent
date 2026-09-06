@@ -1708,3 +1708,85 @@ Files
   docs/journal.txt              this entry
 
 Tests: 212, unchanged. No code.
+
+
+2026-09-06 (cont.)  Outcome capture — the loop closes, and a silent demotion
+                    was removed before it could happen
+------------------------------------------------------------------------------
+Built the outcome-capture plan. The system now remembers what happened after a
+human hit send, which it never has.
+
+  jobs.state   what the MACHINE decided   seen · rejected · scored · skipped · variant
+  outcomes     what happened with a HUMAN sent · accepted · replied · declined
+
+enriched, queued and sent left JOB_STATES. The first two were declared and
+never written by anything since the enum shipped, which made "state stops at
+queued" a claim about a state nothing set; the third recorded a human action in
+a machine's enum. Both removed facts stay derivable — enrichment is a contacts
+row, queued is scored-with-no-outcome — so nothing was lost.
+
+THE STRESS TEST EARNED ITS KEEP TWICE, AND BOTH TIMES BEFORE ANY CODE.
+
+  roles.ts:98   rank = sent -> 0, queued -> 1, enriched -> 2, else 3
+  roles.ts:115  refuses to demote a `sent` row
+
+Its own comment said why: work already started outranks anything, because
+demoting it orphans that work. Deleting `sent` would have deleted the
+protection, nothing would have failed, no test covered it, and the loss would
+only ever have surfaced as a role quietly vanishing from the queue with an
+outcome row hanging off a posting nothing reads. The rule now reads from
+outcomes instead. This is exactly the silent-no-op the #7 sub-analysis exists
+for.
+
+Second: TYPECHECK ONLY CAUGHT HALF OF IT. setState is typed, so queue.ts:28
+failed the build immediately. queue.ts:47 and roles.ts:57 carried the same
+states as SQL STRING LITERALS, which tsc cannot see, and a green build would
+have left two queries selecting on values that can no longer exist. Predicted
+as finding 2.a; confirmed exactly.
+
+Third, found while writing the schema: a backtick inside a comment INSIDE the
+db.exec template literal ends the SQL string. Five syntax errors from a doc
+comment. The existing comments in that block avoid backticks and now say why.
+
+TWO LIVE-DATA REPAIRS, dry-run by default, backup taken first.
+
+  12 stranded rows   all Bjak, all pre-variant machine dedupes, none of them
+                     Mahi's rejections. Scored (0.0 -> 66-79) BEFORE the state
+                     changed, because backfill ranks posted_at before score and
+                     an unscored row could otherwise steal a representative
+                     slot. Restored to variant, then backfilled.
+  contacts 5 -> 2    test:1 had no jobs row at all; two rows carried opaque
+                     /in/ACw... member ids where a profile URL belongs. Matched
+                     by RULE, not by id, so a re-run stays honest. Printed
+                     before deletion — they name real people and cannot be
+                     backed up into the repo.
+
+AND AN UNPLANNED FIX FELL OUT. Before: 23 scored rows across 21 roles, because
+two roles had TWO representatives each. After the backfill: 21 scored, 21 roles,
+zero roles with more than one representative, zero live rows without a role.
+`skipped` is now 0 and means only "Mahi does not want this".
+
+  BUT THE CAUSE IS STILL THERE. poll.ts groups only the survivors of the
+  current pass and elects a representative among those, so a later pass that
+  adds a posting to an existing role elects a second one. The backfill repaired
+  the symptom; the next poll can recreate it. Out of scope here, and it wants
+  its own fix — the representative election has to consider members already in
+  the store, not just the ones just seen.
+
+Smoke-tested end to end against a throwaway database rather than live data:
+queue lists, unknown id refuses, sent records and drops it from the queue,
+declined prompts for a note without refusing, status prints 1 sent / 1 declined
+/ 100%.
+
+Files
+  src/store/db.ts           outcomes table, recordOutcome, outcomesFor,
+                            outreachRates, ratePct, jobExists; JOB_STATES
+  src/store/repair.ts       (new) the two one-shot repairs, dry-run default
+  src/store/outcomes.test.ts (new) 15 tests
+  src/queue.ts              four outcome flags, contact resolution, refusals
+  src/roles.ts              work-in-hand rule moved to outcomes
+  src/status.ts             OUTREACH section; em-dash on a zero denominator
+  CLAUDE.md                 three notes this change made false
+  package.json              npm run repair
+
+Tests: 212 -> 227. typecheck clean.
