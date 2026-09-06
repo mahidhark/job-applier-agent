@@ -15,6 +15,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { isResolvableProfileUrl } from '../agent/profile.js';
 
 export const CASES_PATH = process.env['JOB_AGENT_CASES'] ?? 'data/cases/cases.json';
 
@@ -120,8 +121,25 @@ export function validateCases(cases: EvalCase[]): CaseProblem[] {
     }
 
     for (const a of c.acceptable) {
-      if (!/linkedin\.com\/in\//i.test(a.profileUrl)) {
-        problems.push({ jobId: c.jobId, problem: `"${a.profileUrl}" is not a LinkedIn profile URL` });
+      // NOT just "is it a linkedin.com/in/ URL".
+      //
+      // An opaque `/in/ACwAAA...` member id passes that test and is still
+      // unusable: `record_contact` refuses to commit one, so the agent can only
+      // ever answer with a vanity URL, and `right_contact` matches on URL. A
+      // case graded against a member id can therefore never be passed by any
+      // model, however right it is.
+      //
+      // This is checked HERE, before grading, because the alternative is
+      // discovering it after twenty minutes of a human's judgement has gone
+      // into a sheet that cannot score anything.
+      if (!isResolvableProfileUrl(a.profileUrl)) {
+        problems.push({
+          jobId: c.jobId,
+          problem: /linkedin\.com\/in\//i.test(a.profileUrl)
+            ? `"${a.profileUrl.slice(0, 48)}..." is an opaque member id, not a profile URL — ` +
+              `nothing can ever match it. Re-run cases:prepare in Full mode.`
+            : `"${a.profileUrl}" is not a LinkedIn profile URL`,
+        });
       }
     }
     if (!c.reason.trim()) problems.push({ jobId: c.jobId, problem: 'no reason given' });

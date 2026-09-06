@@ -1997,3 +1997,73 @@ Files
   CLAUDE.md                   the loop, the subject rule, the retract rule
 
 Tests: 244 -> 259. typecheck clean. No spend.
+
+
+2026-09-06 (cont.)  The case set — and I paid $1.05 for a sheet that could not
+                    have scored anything
+------------------------------------------------------------------------------
+§2.1 done. Ten graded-ready cases across ten companies, all with usable profile
+URLs. It took two runs and the first one was my fault.
+
+FOUND BEFORE SPENDING, both worth having:
+
+  prepare-cases.ts SPENT AND RECORDED NOTHING. No recordSpend, no ceiling
+  check. `npm run status` would have shown $0.000 after a dollar and a half,
+  and the daily guard could neither see it nor refuse it. It was the only paid
+  path in the repo that did not declare its price, against a design rule that
+  says every one must. It now charges before each call and refuses at the cap —
+  which is how the run stayed visible while it was happening.
+
+  THE SELECTION RETURNED TEN BJAK ROLES. `ORDER BY score DESC LIMIT 10`, and
+  Bjak both scores highest and advertises most. That set cannot test
+  ambiguous_company, would not have contained the two mandatory
+  nobody_findable cases, and exercises company resolution once instead of ten
+  times — for the same money. One posting per company now: ten companies, ten
+  cases.
+
+FOUND AFTER SPENDING $1.05, WHICH IS THE PART I SHOULD HAVE CAUGHT:
+
+  prepare-cases.ts asked for profileScraperMode 'Short'. Short returns an
+  opaque /in/ACwAAA... member id where the profile URL belongs. record_contact
+  REFUSES those, so the agent can only ever commit a vanity URL — and
+  right_contact matches on URL. Every case would have scored 0 against every
+  model, and it would have been read as the model failing.
+
+  PR #4 fixed exactly this in agent/tools/index.ts. This file was never
+  touched, because nothing connected the two. I deleted two contact rows for
+  this same bug THIS MORNING and then paid to generate ten cases full of it.
+
+  validateCases would not have caught it either: it tested
+  /linkedin\.com\/in\//, which an opaque id passes. So the sheet would have
+  validated, twenty minutes of Mahi's judgement would have gone into it, and
+  the zeros would have arrived afterwards.
+
+THREE FIXES, and the third is the one that matters:
+
+  1. prepare-cases uses Full, and the Full-mode prices ($0.14 / $0.10).
+  2. validateCases calls isResolvableProfileUrl, so an unscoreable sheet is
+     refused BEFORE grading rather than after.
+  3. src/eval/scraper-mode.test.ts reads both files and asserts they ask for
+     the same modes. Verified by reintroducing the bug: 2 tests fail. Restored:
+     5 pass. It reads source rather than behaviour on purpose — the alternative
+     is calling a paid actor to find out, which is what made this expensive.
+
+Cap raised $2.00 -> $3.00 for the re-run, at Mahi's call.
+
+  first run   $1.050   Short mode, unusable URLs
+  rebuild     $1.450   Full mode, 0 unusable URLs
+  today       $2.500   of a $3.00 ceiling
+
+The pattern this session keeps proving: the instrumentation is wrong more often
+than the models, and it is wrong in ways that look exactly like the model being
+wrong. Twice today a fix shipped that would have produced a false zero.
+
+Files
+  src/eval/prepare-cases.ts     Full mode; spend recorded and capped;
+                                one posting per company
+  src/eval/cases.ts             validateCases rejects opaque member ids
+  src/eval/scraper-mode.test.ts (new) 5 tests watching the drift
+  config/default.json           enrich cap 2.00 -> 3.00
+
+Tests: 259 -> 264. typecheck clean. Spend: $2.50.
+Next: Mahi grades the sheet, then npm run cases:check, then §2.3.
