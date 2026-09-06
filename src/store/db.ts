@@ -597,6 +597,15 @@ export function recordOutcome(
   }
 }
 
+/**
+ * Every posting somebody has been contacted about.
+ *
+ * The successor to the `sent` state. Read once per pass rather than per role,
+ * because it is consulted for every election and the set is tiny.
+ */
+export const contactedJobIds = (): Set<string> =>
+  new Set(q<{ job_id: string }>('SELECT DISTINCT job_id FROM outcomes').map((r) => r.job_id));
+
 /** Every outcome recorded against one posting. */
 export const outcomesFor = (jobId: string): Outcome[] =>
   q<Outcome>('SELECT * FROM outcomes WHERE job_id = ? ORDER BY contact_url', jobId);
