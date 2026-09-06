@@ -2067,3 +2067,80 @@ Files
 
 Tests: 259 -> 264. typecheck clean. Spend: $2.50.
 Next: Mahi grades the sheet, then npm run cases:check, then §2.3.
+
+
+2026-09-06 (cont.)  Ten roles, ten commitments — and the display was lying
+                    about the one that mattered
+------------------------------------------------------------------------------
+Mahi pushed back on the case set: "wasn't the LLM supposed to apply judgement
+and filter the list?" He was right, and the answer changed what we did.
+
+prepare-cases pulls an UNFILTERED slice of ten employees per company. The agent
+calls the same actor WITH jobTitles it chooses. So the sheet showed a random
+ten while the agent searches deliberately. Grading `acceptable` from that sheet
+would have marked the agent wrong for finding the right person.
+
+So: run the agent on the ten roles, let it judge, and correct it — which is the
+loop that shipped this morning. Ten runs, $3.095, all ten committed.
+
+  Bjak         Yi Yao N., Head of Engineering       no product leader exists
+  Skydreams    Tiffany S., Head of Product          hiring a PM, Shape Up cycles
+  VIDAA        Tudor Teusan, Senior Product Dir     no observation claimed
+  Jumbo        Mark Suurland, EM Data & AI          owns the AI platform area
+  FareHarbor   Adi Pogolansky, VP Product
+  EY           Steve Gill, Global Talent Systems    posted the exact remit
+  Booking.com  Abhishek Mukherjee, Platform Product hiring a Tech PM
+  Adyen        Christopher Panda                    HIRING THIS EXACT ROLE,
+                                                    reporting to him
+  Kira         NOBODY, deliberately                 wrong company, refused
+  Get-e        David van der Wel, Head of Product
+
+SIX OF THOSE TEN PEOPLE DO NOT APPEAR IN THE PREPARED SHEET. Teusan, Suurland,
+Gill, Mukherjee, Pogolansky, Panda. The filtered search found them; the
+unfiltered sample did not. That is Mahi's point, measured.
+
+TWO HARNESS FAULTS, both found by running for real.
+
+  1. TWO COMPLETION MECHANISMS. GOAL_SYSTEM told the model to commit with
+     record_contact AND to "end with a plain-text block". On Skydreams Claude
+     did the second: found the right person, read her posts, wrote the block,
+     never called the tool. Nothing committed, no decision recorded, and the
+     runner said "stopped without the required block" — wrong twice, because
+     the block was there and the block was never what run.ts read. It has only
+     ever read the tool call; the text block was vestigial from before the
+     commit tools existed. Removed. Re-ran Skydreams and it committed
+     immediately, with the best observation of the batch.
+
+  2. A COMMITTED ABSENCE PRINTED AS A FAILURE. report() only builds `parsed`
+     for a contact, so record_no_contact fell through to the failure branch and
+     printed "it never committed" — two lines under stopReason saying
+     `answered_none`. Kira: 12 tool calls, correctly identified Kira Learning
+     as a Palo Alto edtech rather than a Dutch stockbroking app, searched
+     variants, refused to name anyone. A textbook ambiguous_company success,
+     displayed as a failure, and I reported it to Mahi as one TWICE before
+     reading the trace.
+
+     This is harness fault #7 from 2026-09-04 — "stopped without answer →
+     honest 'found nobody', which the prompt asked for" — fixed then in the
+     stop reason and never in what a human reads. Two days later it cost the
+     same mistake again, in the same session that added a scorer test for the
+     same class of error.
+
+THE PATTERN, now at fourteen: the instrumentation has been wrong more often
+than the models, and it is wrong in ways that look exactly like the model being
+wrong. Today alone: a Short-mode case set that would have scored every model
+zero, a prompt with two endings, and a display that called a correct refusal a
+failure.
+
+Spend today $5.595 of a $6.00 cap, every dollar recorded — which it would not
+have been this morning, because prepare-cases wrote no spend rows at all.
+
+Files
+  src/agent/enrich-agent.ts  one completion mechanism; the reason in the header
+  src/agent/run.ts           no_block -> no_commit; a committed absence reads
+                             as an answer, with its reason
+  data/cases/cases.json      10 cases, 10 companies (outside git)
+
+Tests: 264, unchanged by these two fixes. typecheck clean.
+Next: Mahi reviews the ten, --wrong the ones he disagrees with, and those
+corrections become the labels.

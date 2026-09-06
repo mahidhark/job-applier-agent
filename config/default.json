@@ -129,7 +129,7 @@
     "maxProfilesPerCompany": 3,
     "recentPostsPerProfile": 5,
     "onlyRecentlyActive": true,
-    "maxSpendPerDayUsd": 3.0
+    "maxSpendPerDayUsd": 6.0
   },
   "draft": {
     "connectionNoteMaxChars": 300,
