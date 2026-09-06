@@ -17,13 +17,14 @@
  */
 import {
   q, run, upsertRole, setRoleId, setState, postingsInRole, taxonomyFor, saveTaxonomy,
-  recordDecision, type Role,
+  recordDecision, contactedJobIds, type Role,
 } from './store/db.js';
 import { roleKey, roleCore, qualifierOf } from './roles/key.js';
 import { judgeCandidate, type CandidatePosting } from './roles/judge.js';
 import {
   deriveTaxonomy, unitFor, taxonomyFromStore, slugifyUnit, type TaxonomyPosting, type Taxonomy,
 } from './roles/taxonomy.js';
+import { elect } from './roles/elect.js';
 import { loadConfig } from './config-file.js';
 
 const args = process.argv.slice(2);
@@ -83,9 +84,7 @@ function backfill(): void {
   // Every posting an outcome has ever been recorded against. Read once: this
   // is the successor to the `sent` state, and it must be consulted for the
   // representative choice AND for the demotion guard below.
-  const contacted = new Set(
-    q<{ job_id: string }>('SELECT DISTINCT job_id FROM outcomes').map((r) => r.job_id),
-  );
+  const contacted = contactedJobIds();
 
   // Picking a representative is part of the backfill, not a later step.
   //
@@ -98,39 +97,28 @@ function backfill(): void {
     const unit = unitFor(taxonomyOf(members[0]!.company), qualifierOf(members[0]!.title));
     upsertRole(key, members[0]!.company, key, roleCore(members[0]!.title), unit);
 
-    // WORK ALREADY STARTED OUTRANKS ANYTHING, and this is now read from
-    // `outcomes` rather than from the state.
+    // The order lives in ONE place now — `src/roles/elect.ts`, which poll.ts
+    // uses too. This function used to hold its own copy, and poll.ts held a
+    // weaker one; two statements of one rule drift, and that pair drifted into
+    // a role carrying two representatives.
     //
-    // The rule is unchanged and the reason for it is unchanged: a posting the
-    // operator has already contacted somebody about is the one he has in hand,
-    // and demoting it to `variant` would orphan that work — it would drop out
-    // of the queue while its outcome row hung off a posting nothing reads.
-    //
-    // What changed is where the fact lives. It used to be `state === 'sent'`,
-    // and `sent` has left JOB_STATES because contacting a person is not a
-    // decision the machine makes. Deleting the state without moving the rule
-    // would have deleted the protection silently — nothing would have failed,
-    // no test covered it, and the loss would only ever have shown up as a role
-    // quietly vanishing from the queue.
-    //
-    // Otherwise freshest, best scored, lowest id — the same rule poll.ts uses,
-    // and the last term keeps the choice stable between runs.
-    const rank = (id: string) => (contacted.has(id) ? 0 : 1);
-    const ranked = [...members].sort((a, b) => {
-      if (rank(a.id) !== rank(b.id)) return rank(a.id) - rank(b.id);
-      const at = a.posted_at ? Date.parse(a.posted_at) : 0;
-      const bt = b.posted_at ? Date.parse(b.posted_at) : 0;
-      if (at !== bt) return bt - at;
-      if ((a.score ?? 0) !== (b.score ?? 0)) return (b.score ?? 0) - (a.score ?? 0);
-      return a.id < b.id ? -1 : 1;
-    });
+    // Mapping into `Candidate` explicitly rather than passing rows through:
+    // these are `posted_at`, and poll.ts holds `postedAt`. One comparator over
+    // both shapes reads undefined on whichever it was not written for.
+    const order = elect(members.map((m) => ({
+      id: m.id,
+      postedAt: m.posted_at,
+      score: m.score,
+      contacted: contacted.has(m.id),
+      state: m.state,
+    })));
+    const byId = new Map(members.map((m) => [m.id, m]));
+    const ranked = order.map((o) => byId.get(o.id)!);
 
     for (const [i, m] of ranked.entries()) {
       setRoleId(m.id, key);
       tagged++;
       if (i === 0) {
-        // Leave the representative's state alone. It may be `queued` or `sent`,
-        // and nothing here has the standing to undo that.
         if (m.state === 'variant') setState(m.id, 'scored');
       } else if (!contacted.has(m.id)) {
         // Count every posting that ends up a variant, not only the ones this

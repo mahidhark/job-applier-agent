@@ -1871,3 +1871,62 @@ Files
   docs/journal.txt                      this entry
 
 Tests: 227, unchanged. No code.
+
+
+2026-09-06 (cont.)  One representative per role — and the old code was measured
+                    failing, not assumed to
+------------------------------------------------------------------------------
+Plan 1 built. src/roles/elect.ts is now the only place the representative order
+is written down.
+
+THE BUG WAS THE SECOND COPY, not the missing merge. roles.ts elected across
+every member of a role; poll.ts had a weaker copy that saw only the survivors of
+the current pass, and nothing in poll.ts demoted an incumbent. So a role gained
+one representative per pass in which it gained a posting. Fixing it by teaching
+poll.ts to merge would have left two statements of one rule, which is how they
+drifted in the first place.
+
+PROVED IT RATHER THAN ASSERTED IT. Reproduced the exact conditions on a
+throwaway store — populate from the free boards, delete two variants of roles
+that already had a representative, poll again so they return as new postings
+joining existing roles — then ran BOTH versions against identical state:
+
+    pre-fix   9 scored across 7 roles   2 roles with two representatives
+    post-fix  7 scored across 7 roles   0
+
+Free, because APIFY_TOKEN unset skips paid discovery and the two ATS boards are
+enough to reproduce it. No spend this session.
+
+Step 3 of the plan earned its place. Switching roles.ts to elect() BEFORE
+touching poll.ts, and proving a backfill moved zero rows, meant the extraction
+was known-good before the risky half. Representatives byte-identical before and
+after.
+
+ONE DEVIATION FROM THE PLAN, and it is a plan bug not a code one. §3.1 listed
+incumbency as rule 2, ahead of freshness — but its own prose said "freshest,
+then best score, then lowest id ... but where those are all equal the incumbent
+keeps the slot". Those contradict: incumbency at position 2 would mean a
+genuinely fresher listing could never take the slot, which defeats the point.
+Implemented per the prose — contacted, freshest, score, incumbent, id — because
+incumbency is a tiebreak, not a shield. Tested both directions: a tie keeps the
+incumbent, a strictly better challenger takes the slot.
+
+Also found while wiring: roles.ts still carried a comment saying a
+representative's state "may be `queued` or `sent`". Both left JOB_STATES
+yesterday. Removed.
+
+contactedJobIds() moved into db.ts — poll.ts and roles.ts were about to hold the
+same SELECT DISTINCT, which is the same mistake this session exists to undo.
+
+Live store: unchanged. 21 roles, 21 representatives, poll a genuine no-op
+because nothing new passed the gates.
+
+Files
+  src/roles/elect.ts       (new) the only copy of the order
+  src/roles/elect.test.ts  (new) 17 tests, pure, no database
+  src/poll.ts              elects across the union of stored and new
+  src/roles.ts             calls elect(); stale queued/sent comment removed
+  src/store/db.ts          contactedJobIds()
+  CLAUDE.md                the one-representative invariant
+
+Tests: 227 -> 244. typecheck clean.

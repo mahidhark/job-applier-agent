@@ -115,6 +115,20 @@ many times — per market, per product line, and under different brands of the
 same parent. 63 live postings are 21 roles. The extra listings sit in `variant`
 and are shown under their role rather than competing for a queue slot.
 
+**Exactly one posting per role is `scored`, and `src/roles/elect.ts` is the only
+place that order is written down.** There used to be two copies — `roles.ts`
+elected across every member, `poll.ts` across only the survivors of the current
+pass — and since nothing in `poll.ts` demoted an incumbent, a role gained a
+representative every pass in which it gained a posting. Measured on the same
+store: the old code produced 9 `scored` rows across 7 roles, the new one 7.
+Two copies of a rule is how they drift; do not write a third.
+
+The order: contacted first (never demote work in hand), then freshest, then
+best scored, then **the incumbent on a tie**, then lowest id. Incumbency is
+there because `poll` can now demote — without it two tied postings swap the
+slot every pass and the queue reshuffles daily for no visible reason. A
+challenger takes the slot only by being strictly better.
+
 **Grouping uses a model; screening does not.** Not a contradiction of the rule
 above: screening runs over every posting ever seen and must stay free and
 auditable, while grouping runs over the ~63 survivors and asks something no

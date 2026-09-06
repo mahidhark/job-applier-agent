@@ -19,9 +19,11 @@ import { screen, passed, failures } from './screen/gates.js';
 import { scoreJob } from './score/score.js';
 import {
   upsertJob, setState, setScore, recordGate, spentLast24h, upsertRole, setRoleId, taxonomyFor,
+  postingsInRole, contactedJobIds,
 } from './store/db.js';
 import { roleKey, roleCore, qualifierOf } from './roles/key.js';
 import { taxonomyFromStore, unitFor } from './roles/taxonomy.js';
+import { elect, type Candidate } from './roles/elect.js';
 
 const once = process.argv.includes('--once');
 
@@ -54,7 +56,7 @@ async function pass(): Promise<void> {
     );
   }
 
-  let seen = 0, fresh = 0, accepted = 0, variants = 0;
+  let seen = 0, fresh = 0, accepted = 0, variants = 0, demoted = 0;
   const survivors: Awaited<ReturnType<(typeof sources)[number]['fetch']>> = [];
   const shortlist: Array<{
     id: string; title: string; company: string; score: number; variants: number;
@@ -139,47 +141,80 @@ async function pass(): Promise<void> {
     else groups.set(key, [job]);
   }
 
+  // ELECT ACROSS THE WHOLE ROLE, not just this pass.
+  //
+  // This used to rank only `members` — the survivors of the current pass — and
+  // nothing here demoted an incumbent, so a role gained ONE REPRESENTATIVE PER
+  // PASS in which it gained a posting. Two roles were carrying two on
+  // 2026-09-06: two queue slots and two paid contact lookups for one job.
+  //
+  // It needed a role that already existed AND a new posting joining it, which
+  // is why weeks of stable free boards never showed it and paid discovery did.
+  const contacted = contactedJobIds();
+
   for (const [key, members] of groups) {
     const unit = unitFor(taxonomyOf(members[0]!.company), qualifierOf(members[0]!.title));
     upsertRole(key, members[0]!.company, key, roleCore(members[0]!.title), unit);
 
-    // Which posting represents the group.
+    // Everything already filed under this role, plus what arrived this pass.
     //
-    // NOT location, though the plan first said so: every survivor has already
-    // passed `location_eligible`, because `passed()` is an AND across all
-    // gates. A location tiebreak here could never discriminate. So freshest,
-    // then best scored, then lowest id — the last purely so the choice is
-    // stable between runs and the queue does not reshuffle for no reason.
-    const ranked = [...members].sort((a, b) => {
-      const at = a.postedAt ? Date.parse(a.postedAt) : 0;
-      const bt = b.postedAt ? Date.parse(b.postedAt) : 0;
-      if (at !== bt) return bt - at;
-      const as = scores.get(a.id) ?? 0;
-      const bs = scores.get(b.id) ?? 0;
-      if (as !== bs) return bs - as;
-      return a.id < b.id ? -1 : 1;
-    });
+    // Mapped into `Candidate` explicitly on both sides: these rows carry
+    // `posted_at` and the survivors carry `postedAt`, and one comparator over
+    // both shapes reads undefined on whichever it was not written for — every
+    // date silently becomes 0.
+    const existing = postingsInRole(key);
+    const known = new Map<string, { title: string; company: string; score: number }>();
+    for (const e of existing) {
+      known.set(e.id, { title: e.title, company: members[0]!.company, score: e.score ?? 0 });
+    }
+    for (const m of members) {
+      known.set(m.id, { title: m.title, company: m.company, score: scores.get(m.id) ?? 0 });
+    }
 
-    for (const [i, job] of ranked.entries()) {
-      setRoleId(job.id, key);
+    const candidates: Candidate[] = [
+      ...existing.map((e) => ({
+        id: e.id, postedAt: e.posted_at, score: e.score,
+        contacted: contacted.has(e.id), state: e.state,
+      })),
+      ...members.map((m) => ({
+        id: m.id, postedAt: m.postedAt, score: scores.get(m.id) ?? null,
+        // A posting seen for the first time this pass is not yet in any state
+        // the store would call electable, so it enters as a challenger.
+        contacted: contacted.has(m.id), state: 'variant',
+      })),
+    ];
+
+    const ranked = elect(candidates);
+    // A role whose every listing has been skipped elects nobody. Real, not an
+    // error — and nothing should be written for it.
+    if (!ranked.length) continue;
+
+    for (const [i, cand] of ranked.entries()) {
+      setRoleId(cand.id, key);
+      const info = known.get(cand.id);
       if (i === 0) {
-        setState(job.id, 'scored');
+        if (cand.state !== 'scored') setState(cand.id, 'scored');
         accepted++;
         shortlist.push({
-          id: job.id, title: job.title, company: job.company,
-          score: scores.get(job.id) ?? 0, variants: ranked.length - 1,
+          id: cand.id, title: info?.title ?? '', company: info?.company ?? '',
+          score: info?.score ?? 0, variants: ranked.length - 1,
         });
       } else {
-        setState(job.id, 'variant');
-        variants++;
+        // Demoting an incumbent is new, and only ever happens to a posting
+        // beaten on the merits — `elect` keeps the incumbent on a tie, so the
+        // queue does not reshuffle for no reason.
+        if (cand.state === 'scored') demoted++;
+        else variants++;
+        setState(cand.id, 'variant');
       }
     }
   }
 
   shortlist.sort((a, b) => b.score - a.score);
   console.log(
-    `  ${seen} seen, ${fresh} new, ${accepted} role(s) kept ` +
-    `(${variants} further listing(s) of those same roles)`,
+    `  ${seen} seen, ${fresh} new, ${accepted} role(s) touched ` +
+    `(${variants} further listing(s) of those same roles` +
+    `${demoted ? `, ${demoted} representative(s) replaced` : ''})`,
   );
   for (const s of shortlist.slice(0, config.queue.maxPerDay)) {
     console.log(
