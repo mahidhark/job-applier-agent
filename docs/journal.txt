@@ -1629,3 +1629,82 @@ Files
   docs/journal.txt         this entry
 
 Tests: 212, unchanged. No code.
+
+
+2026-09-06 (cont.)  Outcome-capture plan — the state machine hid a silent
+                    demotion
+------------------------------------------------------------------------------
+DRAFT, awaiting ratification. No code.
+
+Session B planned: Sprint 1 §2.4, expanded into its own doc because the sketch
+in the sprint plan turned out to be four decisions and two migrations short.
+
+Five questions were closed with Mahi first, one at a time:
+
+  enriched / queued   DROPPED from JOB_STATES. Both declared, neither ever
+                      written. §2.4 said "state stops at queued", which cannot
+                      be true of a state nothing sets. sent leaves too — "I
+                      contacted this person" is not a machine decision. The
+                      split that falls out: jobs.state is what the MACHINE
+                      decided, outcomes is what happened with a HUMAN.
+  --declined          not --rejected. --skip and --rejected are opposite ends
+                      of the funnel wearing the same word-shape.
+  the 12 skipped      all Bjak, all pre-variant machine dedupes, none of them
+                      Mahi's rejections. status has been telling him he
+                      rejected twelve roles he never saw. Restore to variant,
+                      SCORE FIRST, backfill — backfill ranks on posted_at
+                      before score, so an unscored 0.0 row could steal a
+                      representative slot.
+  contacts 5 -> 2     test:1 has no jobs row at all (ESM-hoisting residue), and
+                      two rows carry opaque ACwAAA... member ids where a
+                      profile URL belongs — the Short-mode bug, sitting in live
+                      data. outcomes.contact_url joins to these.
+  §2.2 deviations     all three ratified. Both v2.1 [Mahi-verify] items now
+                      closed, so the sprint plan can lock.
+
+TRAJECTORY NEEDS NO STORAGE. Measured rather than argued: the scorer returns 1
+standalone with no Mastra instance and no storage, and scorers.test.ts:243 has
+been proving it since it was written. So no LibSQL, finding 2.a stays closed,
+and §2.3 gets one rule — trajectory lives in SCORERS, never in GATES, because
+runEvals resolves trajectory-type GATES through storage.
+
+AND THEN THE STATE-MACHINE SUB-ANALYSIS EARNED ITS KEEP. Tabulating producers x
+consumers x affordances for all eight states found what none of the reading had:
+
+  roles.ts:98   rank = sent -> 0, queued -> 1, enriched -> 2, else 3
+  roles.ts:115  refuses to demote a `sent` row
+
+Its own comment says why: "work already started outranks anything: a posting
+that has been queued or sent is the one the operator has in hand, and demoting
+it would orphan that work." Deleting `sent` from the enum DELETES THAT
+PROTECTION, and nothing in §2.4 as written replaces it. A posting Mahi had
+already messaged could be demoted to variant by the next regroup and vanish
+from the queue, with the outcome row hanging off a posting nothing reads.
+
+The fix is one line of intent — a job with an outcomes row outranks one without,
+and is never demoted — but it would not have been found by reading §2.4, and it
+is the exact silent-no-op shape the sub-analysis was codified for after the
+Cancel-on-paused incident.
+
+Second-best finding, #2.a: removing a state from JOB_STATES is NOT fully caught
+by typecheck. setState is typed so call sites are, but queue.ts:47 and
+roles.ts:57 carry the states as SQL STRING LITERALS the compiler cannot see.
+Trusting the build here would have left two queries selecting on values that can
+no longer exist.
+
+Also uncomfortable, #8.c: no test anywhere references sent, queued or enriched.
+Removing them breaks nothing — which means nothing was protecting them either.
+A test asserting JOB_STATES goes in, so re-adding one is a deliberate act.
+
+Ten dimensions walked, 31 findings, 15 actionable, notes in §9. One item open
+for Mahi (§9.12): whether the learning-loop writes — recordDecision from the
+agent, and a correction path so recordCorrection stops being test-only — ride
+along or take their own session. Recommendation: their own, immediately after.
+7.b made this one bigger than it looked.
+
+Files
+  docs/outcome-capture-plan.md  (new) plan v1.0 + 10-dimension notes
+  docs/sprint-01-plan.md        §2.4 points at it
+  docs/journal.txt              this entry
+
+Tests: 212, unchanged. No code.
