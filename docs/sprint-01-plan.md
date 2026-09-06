@@ -173,6 +173,13 @@ constructs it with the judge model and passes the case only through
 
 ### 2.4 Outcome capture
 
+*Expanded into its own plan doc: **[outcome-capture-plan.md](outcome-capture-plan.md)**
+(v1.0, stress-tested across 10 dimensions). It carries four decisions Mahi
+ratified on 2026-09-06 that deviate from the sketch below — `enriched`, `queued`
+and `sent` all leave `JOB_STATES`; the flag is `--declined`, not `--rejected` —
+and two live-data migrations this section never anticipated. Read that document,
+not this one, before building.*
+
 Separate from scoring, and worthless retroactively — every day without it is
 evidence that cannot be recovered.
 
