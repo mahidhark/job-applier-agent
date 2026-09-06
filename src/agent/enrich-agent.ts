@@ -81,14 +81,44 @@ export function buildEnrichAgent({ config, provider, toolContext }: EnrichAgentO
   };
 }
 
-/** The goal, stated as the task rather than as a procedure. */
+/** Enough to carry a lesson; not enough to crowd out the posting. */
+const NOTE_CHARS = 300;
+
+/**
+ * The goal, stated as the task rather than as a procedure.
+ *
+ * `corrections` DEFAULTS TO EMPTY, and that default is load-bearing. The §2.3
+ * experiment runner will call this too, and an eval that silently reads
+ * whatever Mahi typed last week is not a controlled comparison — two providers
+ * would be graded against different prompts and the difference would be
+ * attributed to the models.
+ *
+ * Notes are whitespace-collapsed and capped. They are free text that ends up in
+ * a prompt; Mahi is the only author, so this is a bound rather than a defence.
+ *
+ * The heading does NOT say "about this company", and that is deliberate.
+ * `correctionsFor` returns same-subject corrections first and then the most
+ * recent corrections from anywhere — by design, and how taxonomy.ts already
+ * uses it, because "the recruiter posts these; the manager owns the team" is
+ * usually general. Claiming they are all about this company would be false for
+ * the second group, and a prompt that misdescribes its own evidence is how a
+ * model learns to distrust it.
+ */
 export function enrichGoal(job: {
   title: string; company: string; location: string | null;
   companySize: number | null; companyUrl: string | null;
   companyLinkedinUrl: string | null;
   contactName: string | null; contactTitle: string | null; contactProfileUrl: string | null;
   description: string;
-}): string {
+}, corrections: string[] = []): string {
+  const learned = corrections.length
+    ? [
+        ``,
+        `WHAT I HAVE BEEN TOLD BEFORE, from earlier corrections:`,
+        ...corrections.map((c) => `  - ${c.replace(/\s+/g, ' ').trim().slice(0, NOTE_CHARS)}`),
+      ]
+    : [];
+
   return [
     `Find who to approach about this role, and one true thing to say to them.`,
     ``,
@@ -103,6 +133,7 @@ export function enrichGoal(job: {
       ? `The posting names ${job.contactName}${job.contactTitle ? `, "${job.contactTitle}"` : ''}` +
         `${job.contactProfileUrl ? ` (${job.contactProfileUrl})` : ''} as having posted it.`
       : `The posting does not say who posted it.`,
+    ...learned,
     ``,
     `Job description:`,
     job.description.slice(0, 3000),

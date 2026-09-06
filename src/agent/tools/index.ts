@@ -31,7 +31,9 @@
  */
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
-import { recordContact, recordSpend, recordActorCall, actorHealth } from '../../store/db.js';
+import {
+  recordContact, recordSpend, recordActorCall, actorHealth, recordDecision,
+} from '../../store/db.js';
 import { runActorViaMcp } from '../apify.js';
 import { checkGrounding } from '../grounding.js';
 import { renderProfiles, isResolvableProfileUrl, type RawProfile } from '../profile.js';
@@ -113,6 +115,21 @@ export interface EnrichToolContext {
   onFinish: (o: EnrichOutcome) => void;
   /** Returns false when the run has spent its budget. */
   charge: (tool: string) => boolean;
+  /**
+   * What a recorded judgement is about, computed by the caller.
+   *
+   * The caller has the posting and this file does not, so the subject and
+   * context are handed in rather than queried here. `decider` is the model
+   * label: a decision without one cannot serve the model comparison the whole
+   * eval effort exists to run, which is exactly why it lives on the interface
+   * rather than being looked up later.
+   */
+  decision: {
+    decider: string;
+    /** The role id, so a lesson generalises to the company. Falls back to the job id. */
+    subject: string;
+    context: Record<string, unknown>;
+  };
 }
 
 export function buildEnrichTools(ctx: EnrichToolContext) {
@@ -321,6 +338,27 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
       };
       recordContact(ctx.jobId, result.name, result.title || null, result.profileUrl || null,
                     'enrich-agent', observation || null);
+
+      // THE JUDGEMENT, not just the answer.
+      //
+      // `input.reasoning` — "why this person rather than the others" — was
+      // collected and thrown away for the life of this tool. It is the only
+      // gradeable artefact the run produces, and every path to improving the
+      // system reads these rows: few-shot, retrieval, LoRA, DPO.
+      //
+      // Written AFTER the refusals above, so a fabricated observation or an
+      // unopenable profile records nothing.
+      recordDecision({
+        kind: 'contact',
+        subject: ctx.decision.subject,
+        context: ctx.decision.context,
+        chose: {
+          name: result.name, title: result.title,
+          profileUrl: result.profileUrl, observation,
+        },
+        reasoning: input.reasoning,
+        decider: ctx.decision.decider,
+      });
       ctx.onFinish({ found: true, contact: result, reason: '' });
       return 'Recorded. You are done — reply with a one-line summary and call no more tools.';
     },
@@ -353,6 +391,24 @@ export function buildEnrichTools(ctx: EnrichToolContext) {
       ),
     }),
     execute: async ({ reason }) => {
+      // "Nobody is reachable" used to leave NO TRACE AT ALL — this tool called
+      // only `ctx.onFinish`, an in-memory callback, so after the process exited
+      // a run that correctly concluded a company has nobody approachable was
+      // indistinguishable from a run that never happened.
+      //
+      // The reason text is kept VERBATIM and never collapsed to a boolean. The
+      // prompt asks the model to "say plainly if a source returned nothing
+      // rather than the company having nobody", and flattening that would
+      // record a blocked actor as a fact about a business — the exact lie
+      // ActorBlockedError exists to prevent.
+      recordDecision({
+        kind: 'contact',
+        subject: ctx.decision.subject,
+        context: ctx.decision.context,
+        chose: { found: false },
+        reasoning: reason,
+        decider: ctx.decision.decider,
+      });
       ctx.onFinish({ found: false, contact: null, reason });
       return 'Recorded that no contact was found. You are done — reply with one line and call no more tools.';
     },

@@ -13,6 +13,8 @@ npm run poll             # the loop
 npm run status           # states, rejection reasons, spend
 npm run queue            # today's outreach list
 npm run queue -- --sent <id>      # and --accepted --replied --declined
+npm run queue -- --wrong <id> --note "why"   # that contact was the wrong person
+npm run queue -- --unwrong <id>              # withdraw that correction
 npm run repair           # DRY RUN: the two one-shot live-data repairs
 npm run explain -- <id>  # why one posting was skipped, or never seen
 npm run agent -- <id>    # find the contact for one posting (SPENDS)
@@ -156,6 +158,27 @@ because demoting it drops the role out of the queue while its outcome row hangs
 off a posting nothing reads. This used to key on the `sent` state; deleting
 that state without moving the rule would have removed the protection silently,
 with no test failing.
+
+**The learning loop is closed, and it stays closed only if it is read.** The
+agent records its judgement (`recordDecision` in both commit tools), Mahi
+corrects it (`--wrong`), and the next run at that company is told
+(`correctionsFor` → `enrichGoal`). Recording without the feed-back step is a
+growing table nobody reads, which is what this system had for a month.
+
+**A decision's subject is the ROLE ID, never the job id.** `correctionsFor`
+does a `LIKE` prefix match and a role id starts with the company, so "the
+recruiter posts these; the Head of Product owns the team" reaches every future
+role there. A job id generalises to nothing — the posting is gone in a month.
+
+**`correctionsFor` returns same-subject corrections AND recent ones from
+anywhere.** By design — most lessons are general — which is why the prompt
+heading says "from earlier corrections" rather than "about this company". Do
+not make a prompt claim more about its evidence than is true.
+
+**A correction is retracted, never deleted.** `decisions` is the audit trail
+few-shot, retrieval, LoRA and DPO all read; "I judged X, corrected to Y, then
+withdrew it" is more information than the row never existing.
+`retracted_at IS NULL` is what keeps a withdrawn note out of a prompt.
 
 **An unscoreable run is not a zero.** `src/eval/scorers/` throws
 `UnscoreableRun` when evidence tools were called and returned nothing, rather

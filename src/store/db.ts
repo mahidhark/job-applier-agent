@@ -222,6 +222,19 @@ addColumn('jobs', 'role_id', 'TEXT');
 addColumn('spend', 'kind', 'TEXT');
 addColumn('roles', 'unit', 'TEXT');
 addColumn('contacts', 'role_id', 'TEXT');
+/**
+ * A correction that has been withdrawn.
+ *
+ * RETRACTED, NOT DELETED. `decisions` is an audit trail — few-shot, retrieval,
+ * LoRA and DPO all read exactly these rows, and "I judged X, then corrected to
+ * Y, then decided the correction was wrong" is more information than the row
+ * never having existed. So the row stays and simply stops teaching.
+ *
+ * It exists because a correction goes VERBATIM into every future prompt at that
+ * company, unweighted. One typed in haste, or right in June and wrong in
+ * September, would otherwise poison every enrichment there with no way back.
+ */
+addColumn('decisions', 'retracted_at', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS jobs_role ON jobs(role_id)');
 
 export const JOB_STATES = [
@@ -413,6 +426,8 @@ export interface Decision {
   corrected_at: string | null;
   corrected_to: string | null;
   correction_note: string | null;
+  /** Set when the correction was withdrawn. The row stays; it stops teaching. */
+  retracted_at: string | null;
 }
 
 export function recordDecision(d: {
@@ -435,9 +450,45 @@ export function recordDecision(d: {
  * reason teaches nothing, and this table exists to teach.
  */
 export function recordCorrection(id: string, correctedTo: unknown, note: string): void {
+  // A SECOND CORRECTION APPENDS. Overwriting would lose the first, and this
+  // column is the one that generalises — "the recruiter posted it" and "they
+  // reorganised in August" are two lessons, not a replacement.
+  //
+  // Correcting also un-retracts: saying it again is saying you meant it.
   db.prepare(
-    'UPDATE decisions SET corrected_at = ?, corrected_to = ?, correction_note = ? WHERE id = ?',
-  ).run(new Date().toISOString(), JSON.stringify(correctedTo), note, id);
+    `UPDATE decisions
+        SET corrected_at = ?, corrected_to = ?, retracted_at = NULL,
+            correction_note = CASE
+              WHEN correction_note IS NULL OR correction_note = '' THEN ?
+              ELSE correction_note || ' | ' || ?
+            END
+      WHERE id = ?`,
+  ).run(new Date().toISOString(), JSON.stringify(correctedTo), note, note, id);
+}
+
+/**
+ * The most recent decision of a kind for one subject, corrected or not.
+ *
+ * What `--wrong` needs: Mahi points at a posting, and the correction has to
+ * find the judgement it belongs to.
+ */
+export const latestDecisionFor = (kind: DecisionKind, subject: string): Decision | null =>
+  q<Decision>(
+    'SELECT * FROM decisions WHERE kind = ? AND subject = ? ORDER BY at DESC LIMIT 1',
+    kind, subject,
+  )[0] ?? null;
+
+/**
+ * Withdraw a correction without erasing that it was made.
+ *
+ * Idempotent, and it does not clear `correction_note` — the note is the record
+ * of what was once believed, and losing it would defeat the point of keeping
+ * the row at all.
+ */
+export function retractCorrection(id: string): void {
+  db.prepare(
+    'UPDATE decisions SET retracted_at = COALESCE(retracted_at, ?) WHERE id = ?',
+  ).run(new Date().toISOString(), id);
 }
 
 /**
@@ -451,13 +502,17 @@ export function recordCorrection(id: string, correctedTo: unknown, note: string)
 export function correctionsFor(
   kind: DecisionKind, subjectPrefix: string, recent = 3,
 ): Decision[] {
+  // `retracted_at IS NULL` on both halves: a withdrawn correction must not
+  // reach a prompt from either the same-subject path or the general one.
   const sameSubject = q<Decision>(
-    `SELECT * FROM decisions WHERE kind = ? AND corrected_at IS NOT NULL AND subject LIKE ?
+    `SELECT * FROM decisions WHERE kind = ? AND corrected_at IS NOT NULL
+       AND retracted_at IS NULL AND subject LIKE ?
      ORDER BY corrected_at DESC`, kind, `${subjectPrefix}%`,
   );
   const seen = new Set(sameSubject.map((d) => d.id));
   const others = q<Decision>(
     `SELECT * FROM decisions WHERE kind = ? AND corrected_at IS NOT NULL
+       AND retracted_at IS NULL
      ORDER BY corrected_at DESC LIMIT ?`, kind, recent + sameSubject.length,
   ).filter((d) => !seen.has(d.id)).slice(0, recent);
   return [...sameSubject, ...others];
