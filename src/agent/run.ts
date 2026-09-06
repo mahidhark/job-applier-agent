@@ -73,9 +73,16 @@ export interface RunRecord {
   steps: number;
   toolCalls: Array<{ name: string; ok: boolean; argsPreview: string }>;
   unknownTools: string[];
-  /** Why it stopped. `max_steps` is not the same failure as `no answer`. */
-  /** `answered_none` is a successful answer: it searched and committed that nobody is reachable. */
-  stopReason: 'answered' | 'answered_none' | 'max_steps' | 'no_block' | 'error';
+  /** Why it committed that nobody is reachable. Present only for answered_none. */
+  noContactReason?: string;
+  /**
+   * Why it stopped. `max_steps` is not the same failure as `no answer`, and
+   * `answered_none` is a successful answer: it searched and committed that
+   * nobody is reachable. `no_commit` means neither commit tool was called —
+   * previously named `no_block`, after a text block that was never what the
+   * runner read.
+   */
+  stopReason: 'answered' | 'answered_none' | 'max_steps' | 'no_commit' | 'error';
   finalText: string;
   /** First raw step, verbatim. Provider step shapes differ and are undocumented
    *  enough that guessing at a field name silently mislabels every tool call. */
@@ -222,11 +229,12 @@ async function runOne(job: JobPosting, provider: ProviderName): Promise<RunRecor
     const stopReason: RunRecord['stopReason'] = contact
       ? 'answered'
       : done && !done.found ? 'answered_none'
-      : toolCalls.length >= MAX_STEPS ? 'max_steps' : 'no_block';
+      : toolCalls.length >= MAX_STEPS ? 'max_steps' : 'no_commit';
 
     return {
       provider: label, jobId: job.id, ok: Boolean(done), wallMs: Date.now() - started,
       steps: toolCalls.length, toolCalls, unknownTools, stopReason, finalText,
+      ...(stopReason === 'answered_none' && done ? { noContactReason: done.reason } : {}),
       rawFirstStep, transcriptChars: transcript.text.length,
       transcriptSample: transcript.text.slice(0, 20000), parsed, grounded,
       ...(done ? {} : { groundingReason: 'the agent committed to neither a contact nor an absence' }),
@@ -247,7 +255,7 @@ function report(r: RunRecord): void {
     answered: 'produced an answer',
     answered_none: 'searched and committed that nobody is reachable',
     max_steps: `RAN OUT OF STEPS (limit ${MAX_STEPS})`,
-    no_block: 'stopped without the required block',
+    no_commit: 'stopped without calling record_contact or record_no_contact',
     error: 'ERRORED',
   }[r.stopReason];
   console.log(`    ${verdict} in ${(r.wallMs / 1000).toFixed(1)}s, ${r.steps} tool calls`);
@@ -264,8 +272,26 @@ function report(r: RunRecord): void {
       no_claim: 'n/a — no observation claimed',
     }[r.grounded ?? 'no_claim'];
     console.log(`      grounded: ${label}   (${r.transcriptChars} chars of tool output seen)`);
+  } else if (r.stopReason === 'answered_none') {
+    // COMMITTING "NOBODY" IS AN ANSWER, and this branch exists because the
+    // display kept saying otherwise. `parsed` is only built for a contact, so
+    // an honest `record_no_contact` fell through to the failure branch below
+    // and printed as though the run had produced nothing — while `stopReason`
+    // two lines above it said `answered_none`.
+    //
+    // That is harness fault #7 from 2026-09-04 ("stopped without answer →
+    // honest 'found nobody', which the prompt asked for"), fixed then in the
+    // stop reason and never in what a human reads. On 2026-09-06 it made a
+    // correct run on the ambiguous-company case read as a failure.
+    console.log(`    → NOBODY, committed deliberately`);
+    if (r.noContactReason) {
+      console.log(`      ${r.noContactReason.slice(0, 400).replace(/\n/g, '\n      ')}`);
+    }
   } else if (r.finalText) {
-    console.log(`    final text did not match the required block:\n      ${r.finalText.slice(0, 300).replace(/\n/g, '\n      ')}`);
+    console.log(
+      `    it never committed. What it said instead:\n      ` +
+      `${r.finalText.slice(0, 300).replace(/\n/g, '\n      ')}`,
+    );
   }
 }
 

@@ -1,6 +1,18 @@
 /**
  * A goal-directed agent, orchestrated by Mastra, over Apify's MCP tools.
  *
+ * THE RUN ENDS WITH A TOOL CALL, and the prompt says so exactly once. It used
+ * to ask for both — call record_contact, AND end with a CONTACT:/TITLE:/PROFILE:
+ * text block — which are two different completion mechanisms for one action.
+ * On 2026-09-06 Claude did the second: it found the right person at Skydreams,
+ * read her posts, wrote the block, and never called the tool. Nothing was
+ * committed, no decision was recorded, and the runner reported "stopped without
+ * the required block" — which was doubly wrong, because the block was there and
+ * the block was never what mattered.
+ *
+ * `run.ts` has only ever read the tool call. The text block was vestigial from
+ * before the commit tools existed, and it cost a paid run to notice.
+ *
  * This is not a pipeline with a model in it. The agent is given an outcome and
  * the whole Apify tool surface, and decides at runtime what to search, which
  * results are worth pursuing, and when it has enough. Discovering that an
@@ -46,14 +58,11 @@ Every actor run costs money. Do not search for a company whose LinkedIn URL you 
 
 FINISHING
 
-End with a plain-text block, and nothing after it:
+Finish by CALLING A TOOL, not by writing an answer out.
 
-CONTACT: <name>
-TITLE: <their role>
-PROFILE: <linkedin url>
-OBSERVATION: <one sentence, or NONE>
-SOURCE: <the exact text your observation came from, or NONE>
-WHY: <why this person and not the others>`;
+record_contact when you have a person. record_no_contact when you genuinely have nobody. One of those two ends the run, and nothing else does — an answer written as text is not recorded and the run counts as having failed to answer.
+
+After the tool call, reply with one short line and stop.`;
 
 export interface EnrichAgentOptions {
   config: AiConfig;
