@@ -54,7 +54,7 @@ function withProvider<T extends { ai: { provider: string; tasks?: Record<string,
 function backfill(): void {
   const rows = q<{ id: string; company: string; title: string; state: string; posted_at: string | null; score: number | null }>(
     `SELECT id, company, title, state, posted_at, score FROM jobs
-      WHERE state IN ('scored', 'enriched', 'queued', 'variant') ORDER BY id`,
+      WHERE state IN ('scored', 'variant') ORDER BY id`,
   );
   if (!rows.length) {
     console.log('\n  Nothing in a live state to group.\n');
@@ -80,6 +80,13 @@ function backfill(): void {
     if (bucket) bucket.push(r); else groups.set(key, [r]);
   }
 
+  // Every posting an outcome has ever been recorded against. Read once: this
+  // is the successor to the `sent` state, and it must be consulted for the
+  // representative choice AND for the demotion guard below.
+  const contacted = new Set(
+    q<{ job_id: string }>('SELECT DISTINCT job_id FROM outcomes').map((r) => r.job_id),
+  );
+
   // Picking a representative is part of the backfill, not a later step.
   //
   // `poll` only ever judges postings it has not seen before, so a re-run will
@@ -91,13 +98,26 @@ function backfill(): void {
     const unit = unitFor(taxonomyOf(members[0]!.company), qualifierOf(members[0]!.title));
     upsertRole(key, members[0]!.company, key, roleCore(members[0]!.title), unit);
 
-    // Work already started outranks anything: a posting that has been queued
-    // or sent is the one the operator has in hand, and demoting it would
-    // orphan that work. Otherwise freshest, best scored, lowest id — the same
-    // rule poll.ts uses, and the last term keeps the choice stable.
-    const rank = (st: string) => (st === 'sent' ? 0 : st === 'queued' ? 1 : st === 'enriched' ? 2 : 3);
+    // WORK ALREADY STARTED OUTRANKS ANYTHING, and this is now read from
+    // `outcomes` rather than from the state.
+    //
+    // The rule is unchanged and the reason for it is unchanged: a posting the
+    // operator has already contacted somebody about is the one he has in hand,
+    // and demoting it to `variant` would orphan that work — it would drop out
+    // of the queue while its outcome row hung off a posting nothing reads.
+    //
+    // What changed is where the fact lives. It used to be `state === 'sent'`,
+    // and `sent` has left JOB_STATES because contacting a person is not a
+    // decision the machine makes. Deleting the state without moving the rule
+    // would have deleted the protection silently — nothing would have failed,
+    // no test covered it, and the loss would only ever have shown up as a role
+    // quietly vanishing from the queue.
+    //
+    // Otherwise freshest, best scored, lowest id — the same rule poll.ts uses,
+    // and the last term keeps the choice stable between runs.
+    const rank = (id: string) => (contacted.has(id) ? 0 : 1);
     const ranked = [...members].sort((a, b) => {
-      if (rank(a.state) !== rank(b.state)) return rank(a.state) - rank(b.state);
+      if (rank(a.id) !== rank(b.id)) return rank(a.id) - rank(b.id);
       const at = a.posted_at ? Date.parse(a.posted_at) : 0;
       const bt = b.posted_at ? Date.parse(b.posted_at) : 0;
       if (at !== bt) return bt - at;
@@ -112,7 +132,7 @@ function backfill(): void {
         // Leave the representative's state alone. It may be `queued` or `sent`,
         // and nothing here has the standing to undo that.
         if (m.state === 'variant') setState(m.id, 'scored');
-      } else if (m.state !== 'sent') {
+      } else if (!contacted.has(m.id)) {
         // Count every posting that ends up a variant, not only the ones this
         // run changed. A re-run otherwise reports "0 became variants" while 26
         // of them are, which reads as the grouping having done nothing.

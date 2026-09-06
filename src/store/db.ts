@@ -148,15 +148,72 @@ db.exec(`
     decided_at  TEXT NOT NULL,
     PRIMARY KEY (company, slug)
   );
+  /**
+   * What happened after a human hit send.
+   *
+   * The other half of the loop. jobs.state records what the MACHINE decided;
+   * this records what happened with a PERSON, and the two never share a
+   * column. That split is why sent, queued and enriched left JOB_STATES:
+   * "I contacted somebody" is not a decision the machine is entitled to make,
+   * and while it lived in the same enum the plan could claim state "stops at
+   * queued" about a state nothing ever wrote.
+   *
+   * Worthless retroactively, which is the whole reason it ships before the
+   * experiment runner. A reply received last week and not written down is
+   * gone; every other item on the roadmap costs the same in a month.
+   *
+   * KEYED ON (job_id, contact_url), not on contact_url. One person can own two
+   * roles worth pursuing, and keying on the person alone would let the second
+   * outreach silently overwrite the first.
+   *
+   * contact_url DEFAULTS TO '' RATHER THAN BEING NULLABLE. SQLite does not
+   * enforce uniqueness across NULLs, so a nullable key column would let one
+   * job accumulate unlimited duplicate rows. The empty string is the honest
+   * case of "I found this person myself, outside the system".
+   *
+   * Every timestamp is nullable and the sequence is NOT enforced: a reply can
+   * arrive for a message sent before this table existed, and refusing to
+   * record it would discard ground truth to protect a schema.
+   *
+   * No backticks anywhere in this comment: it sits inside a template literal,
+   * and one would end the SQL string. The comments above follow the same rule.
+   *
+   * Third-party personal data, like contacts. Never exported, never
+   * committed — the database lives outside the repo.
+   */
+  CREATE TABLE IF NOT EXISTS outcomes (
+    job_id      TEXT NOT NULL,
+    contact_url TEXT NOT NULL DEFAULT '',
+    channel     TEXT NOT NULL,
+    sent_at     TEXT,
+    accepted_at TEXT,
+    replied_at  TEXT,
+    outcome     TEXT,
+    note        TEXT,
+    PRIMARY KEY (job_id, contact_url)
+  );
+  CREATE INDEX IF NOT EXISTS outcomes_sent ON outcomes(sent_at);
   CREATE INDEX IF NOT EXISTS actor_calls_actor ON actor_calls(actor, at);
   CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
   CREATE INDEX IF NOT EXISTS jobs_seen  ON jobs(first_seen);
 `);
 
 /**
- * States a posting moves through. `queued` is terminal for this agent: the
- * send is a human action, so nothing here ever marks a posting `contacted`.
- * A human does that with `npm run queue -- --sent <id>`.
+ * States a posting moves through — all of them decided by the MACHINE.
+ *
+ * `enriched`, `queued` and `sent` used to be here. The first two were declared
+ * and never written by anything, which made the claim that state "stops at
+ * `queued`" untrue of a state nothing set; the third recorded a human action in
+ * a machine's enum. Everything after contact now lives in `outcomes`, so there
+ * is one authority rather than two that drift.
+ *
+ * Both removed facts stay derivable, so nothing was lost:
+ *   enriched -> a `contacts` row exists for that job_id
+ *   queued   -> state is `scored` and no `outcomes` row exists
+ *
+ * There is a test asserting this list. Nothing referenced the three removed
+ * states in any test, which is how they survived being dead for so long — if
+ * you are re-adding one, do it deliberately and give it a producer.
  */
 // Order matters: the tables must exist before a column can be added to them,
 // and the column must exist before an index can be built on it. Getting this
@@ -168,15 +225,20 @@ addColumn('contacts', 'role_id', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS jobs_role ON jobs(role_id)');
 
 export const JOB_STATES = [
-  'seen', 'rejected', 'scored', 'enriched', 'queued', 'sent', 'skipped',
+  'seen', 'rejected', 'scored', 'skipped',
   /**
    * Another advertisement of a role we already kept.
    *
-   * Deliberately NOT `skipped`. That state already carries two unrelated
+   * Deliberately NOT `skipped`. That state used to carry two unrelated
    * meanings — "a duplicate the machine dropped" and "a role Mahi does not
-   * want" — and grouping would make the first common enough to drown the
+   * want" — and grouping would have made the first common enough to drown the
    * second, leaving the count in `npm run status` meaningless. A variant is
    * not a rejection: it is the same job, seen again.
+   *
+   * As of 2026-09-06 `skipped` means only the second thing. All twelve rows
+   * that carried the first were pre-`variant` dedupe residue, and `status` was
+   * reporting them as twelve roles Mahi had rejected when he had rejected
+   * none. They were re-scored and restored to `variant` by `npm run repair`.
    */
   'variant',
 ] as const;
@@ -457,6 +519,136 @@ export function saveTaxonomy(company: string, units: Array<{
  * — otherwise the enrichment budget would silently forget everything spent
  * before today and the guard would be defending nothing.
  */
+/**
+ * What happened after a human hit send.
+ *
+ * Four events, one row per (job, person). `sent` is not a prerequisite for the
+ * others: a reply can arrive for a message that went out before this table
+ * existed, and refusing it would discard ground truth to protect a schema.
+ */
+export type OutcomeEvent = 'sent' | 'accepted' | 'replied' | 'declined';
+
+export interface Outcome {
+  job_id: string;
+  contact_url: string;
+  channel: string;
+  sent_at: string | null;
+  accepted_at: string | null;
+  replied_at: string | null;
+  outcome: string | null;
+  note: string | null;
+}
+
+/** Does this posting exist? An outcome against an unknown id is a typo. */
+export const jobExists = (id: string): boolean =>
+  db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(id) !== undefined;
+
+/**
+ * Record one event against one (job, person).
+ *
+ * TIMESTAMPS ARE NEVER OVERWRITTEN. Marking `--accepted` twice is a no-op on
+ * the existing value, because the FIRST acceptance is the real one and a
+ * refresh would quietly move the evidence. `COALESCE` does that in one
+ * statement rather than a read-then-write that can race itself.
+ *
+ * `contactUrl` falls back to '' rather than NULL: SQLite does not enforce
+ * uniqueness across NULLs, so a nullable key column would let one job collect
+ * unlimited duplicate rows. '' is the honest "I found this person myself".
+ */
+export function recordOutcome(
+  jobId: string,
+  contactUrl: string | null,
+  event: OutcomeEvent,
+  { channel = 'linkedin', note = null }: { channel?: string; note?: string | null } = {},
+): void {
+  const url = contactUrl ?? '';
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO outcomes (job_id, contact_url, channel) VALUES (?, ?, ?)
+     ON CONFLICT (job_id, contact_url) DO NOTHING`,
+  ).run(jobId, url, channel);
+
+  const column = { sent: 'sent_at', accepted: 'accepted_at', replied: 'replied_at' }[
+    event as 'sent' | 'accepted' | 'replied'
+  ];
+  if (column) {
+    db.prepare(
+      `UPDATE outcomes SET ${column} = COALESCE(${column}, ?)
+        WHERE job_id = ? AND contact_url = ?`,
+    ).run(now, jobId, url);
+  } else {
+    // `declined` is a label, not a moment: it has no column of its own, and it
+    // hangs off the outreach that was sent. Same first-write-wins rule.
+    db.prepare(
+      `UPDATE outcomes SET outcome = COALESCE(outcome, 'declined')
+        WHERE job_id = ? AND contact_url = ?`,
+    ).run(jobId, url);
+  }
+
+  // A note is additive. Overwriting one correction with another loses the
+  // first, and this column exists to teach — same reasoning as
+  // `decisions.correction_note`.
+  if (note && note.trim()) {
+    db.prepare(
+      `UPDATE outcomes
+          SET note = CASE WHEN note IS NULL OR note = '' THEN ? ELSE note || ' | ' || ? END
+        WHERE job_id = ? AND contact_url = ?`,
+    ).run(note.trim(), note.trim(), jobId, url);
+  }
+}
+
+/** Every outcome recorded against one posting. */
+export const outcomesFor = (jobId: string): Outcome[] =>
+  q<Outcome>('SELECT * FROM outcomes WHERE job_id = ? ORDER BY contact_url', jobId);
+
+export interface OutreachRates {
+  sent: number;
+  accepted: number;
+  replied: number;
+  declined: number;
+  /** Rows carrying an outcome but no recorded send — real, and not a rate. */
+  unsent: number;
+}
+
+/**
+ * The scoreboard, over a window.
+ *
+ * THE DENOMINATOR IS OUTREACH THIS SYSTEM RECORDS AS SENT. A row with no
+ * `sent_at` is a reply captured opportunistically — a message that went out
+ * before this table existed, or outside it. Counting those in the denominator
+ * would deflate the acceptance rate with outreach nobody measured; counting
+ * them only in the numerator would inflate it. They are reported separately as
+ * `unsent` instead, because they are real and must not silently vanish.
+ *
+ * The window is inclusive at the boundary: `>=`, on ISO timestamps, so a row
+ * exactly `days` old is in. Comparing ISO strings avoids a local-timezone
+ * reading of a UTC column, which is where DST would otherwise bite.
+ */
+/**
+ * A rate, or an em-dash when there is nothing to divide by.
+ *
+ * Zero sent and zero accepted are the same number and mean opposite things:
+ * "nobody has been contacted" and "everybody ignored us". Printing 0% for the
+ * first is a lie the reader cannot detect, so the denominator has to be able
+ * to say it is empty.
+ */
+export const ratePct = (n: number, of: number): string =>
+  of > 0 ? `${Math.round((n / of) * 100)}%` : '—';
+
+export function outreachRates(days = 30): OutreachRates {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  const row = db.prepare(
+    `SELECT
+       COALESCE(SUM(CASE WHEN sent_at >= ? THEN 1 ELSE 0 END), 0)                              AS sent,
+       COALESCE(SUM(CASE WHEN sent_at >= ? AND accepted_at IS NOT NULL THEN 1 ELSE 0 END), 0)  AS accepted,
+       COALESCE(SUM(CASE WHEN sent_at >= ? AND replied_at  IS NOT NULL THEN 1 ELSE 0 END), 0)  AS replied,
+       COALESCE(SUM(CASE WHEN sent_at >= ? AND outcome = 'declined' THEN 1 ELSE 0 END), 0)     AS declined,
+       COALESCE(SUM(CASE WHEN sent_at IS NULL THEN 1 ELSE 0 END), 0)                           AS unsent
+     FROM outcomes`,
+  ).get(since, since, since, since) as OutreachRates;
+  return row;
+}
+
 export function spentLast24h(kind?: SpendKind): number {
   const since = new Date(Date.now() - 86_400_000).toISOString();
   const sql = kind
